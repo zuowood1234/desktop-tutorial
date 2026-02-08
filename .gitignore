@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+investor_assistant.db
+
+# 回测结果文件
+backtest_*.csv
+backtest_*.log
+*.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+*.temp
