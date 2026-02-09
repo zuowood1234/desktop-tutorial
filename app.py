@@ -9,8 +9,12 @@ import os
 import glob
 import re
 
-# 初始化数据库
-db = DBManager()
+# 初始化数据库 (使用 cache_resource 缓存连接池，避免每次刷新重连)
+@st.cache_resource
+def get_db():
+    return DBManager()
+
+db = get_db()
 
 # 设置网页
 st.set_page_config(page_title="AI 智能投顾", layout="wide", initial_sidebar_state="expanded")

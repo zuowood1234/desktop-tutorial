@@ -1,120 +1,79 @@
-import sqlite3
+
+import os
 import hashlib
 import pandas as pd
+import numpy as np
 from datetime import datetime
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
+from psycopg2.extensions import register_adapter, AsIs
+
+# 注册 numpy int64 适配器，防止 psycopg2 报错
+register_adapter(np.int64, AsIs)
+
+# 加载 .env 确保获取到 DATABASE_URL
+load_dotenv()
 
 class DBManager:
-    def __init__(self, db_path='investor_assistant.db'):
-        self.db_path = db_path
-        self._init_db()
-
+    def __init__(self):
+        # 优先读取 DATABASE_URL，无需本地路径
+        self.db_url = os.getenv("DATABASE_URL")
+        if not self.db_url:
+            raise ValueError("DATABASE_URL environment variable is not set!")
+        
+        # 兼容性处理：SQLAlchemy 需要 postgresql:// 开头
+        if self.db_url.startswith("postgres://"):
+            self.db_url = self.db_url.replace("postgres://", "postgresql://", 1)
+            
+        self.engine = create_engine(self.db_url)
+        # 注意：这里不再调用 _init_db，因为迁移脚本已经负责了建表。
+        # 如果需要确保表存在，可以在这里加检查逻辑，但通常由迁移脚本管理。
+        
     def _get_connection(self):
-        return sqlite3.connect(self.db_path)
-
-    def _init_db(self):
-        """初始化数据库表结构"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            # 用户表
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    uid INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    role TEXT DEFAULT 'user',
-                    status TEXT DEFAULT 'active',
-                    can_backtest INTEGER DEFAULT 0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # 兼容性升级
-            try:
-                cursor.execute("ALTER TABLE users ADD COLUMN total_tokens INTEGER DEFAULT 0")
-            except: pass
-            
-            # Token 消耗日志表
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS token_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    uid INTEGER,
-                    action_type TEXT,
-                    stock_code TEXT,
-                    prompt_tokens INTEGER,
-                    completion_tokens INTEGER,
-                    total_tokens INTEGER,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (uid) REFERENCES users (uid)
-                )
-            ''')
-
-            # 自选股表 (包含标签)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS watchlist (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    uid INTEGER,
-                    stock_code TEXT NOT NULL,
-                    tag TEXT DEFAULT '未分类',
-                    added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (uid) REFERENCES users (uid),
-                    UNIQUE(uid, stock_code)
-                )
-            ''')
-            
-            # 每日自动建议表
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS daily_recommendations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    uid INTEGER,
-                    stock_code TEXT NOT NULL,
-                    date TEXT NOT NULL,
-                    tech_action TEXT,
-                    tech_reason TEXT,
-                    sent_action TEXT,
-                    sent_reason TEXT,
-                    price REAL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (uid) REFERENCES users (uid),
-                    UNIQUE(uid, stock_code, date)
-                )
-            ''')
-            conn.commit()
+        # SQLAlchemy connection
+        return self.engine.connect()
 
     # --- 用户管理 ---
     def register_user(self, username, email, password, role='user'):
         """注册新用户"""
         pw_hash = hashlib.sha256(password.encode()).hexdigest()
         # admin 默认有权限
-        can_backtest = 1 if role.lower() == 'admin' else 0
+        can_backtest = True if role.lower() == 'admin' else False
+        
         try:
             with self._get_connection() as conn:
+                # 使用 SQLAlchemy text() 绑定参数
                 conn.execute(
-                    'INSERT INTO users (username, email, password_hash, role, status, can_backtest) VALUES (?, ?, ?, ?, ?, ?)', 
-                    (username, email, pw_hash, role, 'active', can_backtest)
+                    text('INSERT INTO users (username, email, password_hash, role, status, can_backtest) VALUES (:u, :e, :p, :r, :s, :c)'), 
+                    {"u": username, "e": email, "p": pw_hash, "r": role, "s": 'active', "c": can_backtest}
                 )
+                conn.commit()
                 return True, "注册成功"
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
             err_msg = str(e)
-            if 'username' in err_msg: return False, "用户名已存在"
-            if 'email' in err_msg: return False, "该邮箱已被注册"
+            if 'username' in err_msg or 'users_username_key' in err_msg: return False, "用户名已存在"
+            if 'email' in err_msg or 'users_email_key' in err_msg: return False, "该邮箱已被注册"
             return False, f"注册失败: {err_msg}"
 
     def login_user(self, username, password):
         """验证登录并在状态正常时返回用户信息"""
         pw_hash = hashlib.sha256(password.encode()).hexdigest()
         with self._get_connection() as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute('SELECT uid, username, email, role, status, can_backtest FROM users WHERE username = ? AND password_hash = ?', 
-                         (username, pw_hash))
-            user = cursor.fetchone()
+            result = conn.execute(
+                text('SELECT uid, username, email, role, status, can_backtest FROM users WHERE username = :u AND password_hash = :p'), 
+                {"u": username, "p": pw_hash}
+            )
+            user = result.fetchone() # returns Row or None
+            
             if user:
-                user_dict = dict(user)
+                # SQLAlchemy web Row 转 dict
+                user_dict = user._mapping
+                user_dict = dict(user_dict)
+                
                 if user_dict['status'] != 'active':
                     return "disabled"
-                # 转换 bool
-                user_dict['can_backtest'] = bool(user_dict['can_backtest'])
+                
+                # Postgres boolean 无需转换，已经是 True/False
                 return user_dict
             return None
 
@@ -126,22 +85,31 @@ class DBManager:
     def update_user_status(self, uid, new_status):
         """管理员特权：禁用/启用用户"""
         with self._get_connection() as conn:
-            conn.execute('UPDATE users SET status = ? WHERE uid = ?', (new_status, uid))
+            conn.execute(text('UPDATE users SET status = :s WHERE uid = :id'), {"s": new_status, "id": uid})
             conn.commit()
 
     def update_user_backtest_permission(self, uid, can_backtest):
         """管理员特权：授权/取消回测权限"""
         with self._get_connection() as conn:
-            conn.execute('UPDATE users SET can_backtest = ? WHERE uid = ?', (1 if can_backtest else 0, uid))
+            # Postgres boolean
+            val = True if can_backtest else False
+            conn.execute(text('UPDATE users SET can_backtest = :b WHERE uid = :id'), {"b": val, "id": uid})
             conn.commit()
 
     # --- 自选股与标签管理 ---
     def add_to_watchlist(self, uid, stock_code, tag='未分类'):
-        """添加股票到自选，带标签"""
+        """添加股票到自选，带标签 (PG 使用 ON CONFLICT 处理 REPLACE)"""
         try:
             with self._get_connection() as conn:
-                conn.execute('INSERT OR REPLACE INTO watchlist (uid, stock_code, tag) VALUES (?, ?, ?)', 
-                           (uid, stock_code, tag))
+                # PostgreSQL 没有 INSERT OR REPLACE，使用 ON CONFLICT DO UPDATE
+                sql = """
+                INSERT INTO watchlist (uid, stock_code, tag) 
+                VALUES (:uid, :code, :tag)
+                ON CONFLICT (uid, stock_code) 
+                DO UPDATE SET tag = EXCLUDED.tag
+                """
+                conn.execute(text(sql), {"uid": uid, "code": stock_code, "tag": tag})
+                conn.commit()
                 return True
         except Exception as e:
             print(f"添加失败: {e}")
@@ -150,38 +118,57 @@ class DBManager:
     def remove_from_watchlist(self, uid, stock_code):
         """从自选移除"""
         with self._get_connection() as conn:
-            conn.execute('DELETE FROM watchlist WHERE uid = ? AND stock_code = ?', (uid, stock_code))
+            conn.execute(text('DELETE FROM watchlist WHERE uid = :uid AND stock_code = :code'), {"uid": uid, "code": stock_code})
+            conn.commit()
 
     def get_user_watchlist(self, uid):
         """获取用户的所有自选股"""
+        # pd.read_sql_query 支持 SQLAlchemy engine/connection
         with self._get_connection() as conn:
-            query = "SELECT stock_code, tag FROM watchlist WHERE uid = ?"
-            return pd.read_sql_query(query, conn, params=(uid,))
+            query = "SELECT stock_code, tag FROM watchlist WHERE uid = %(uid)s"
+            # Pandas read_sql 使用 %s 风格或者 params 字典
+            return pd.read_sql_query(query, conn, params={"uid": uid})
 
     def get_tags(self, uid):
         """获取用户已创建的所有唯一标签"""
         with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT DISTINCT tag FROM watchlist WHERE uid = ?', (uid,))
-            return [row[0] for row in cursor.fetchall()]
+            result = conn.execute(text('SELECT DISTINCT tag FROM watchlist WHERE uid = :uid'), {"uid": uid})
+            return [row[0] for row in result.fetchall()]
 
     def update_stock_tag(self, uid, stock_code, new_tag):
         """更新已有股票的标签"""
         with self._get_connection() as conn:
-            conn.execute('UPDATE watchlist SET tag = ? WHERE uid = ? AND stock_code = ?', 
-                       (new_tag, uid, stock_code))
+            conn.execute(
+                text('UPDATE watchlist SET tag = :tag WHERE uid = :uid AND stock_code = :code'), 
+                {"tag": new_tag, "uid": uid, "code": stock_code}
+            )
+            conn.commit()
 
     # --- 每日建议存储 ---
     def save_daily_recommendation(self, uid, stock_code, date, tech_res, sent_res, price):
         """保存每日自动生成的建议"""
         try:
             with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT OR REPLACE INTO daily_recommendations 
+                # 同样使用 ON CONFLICT 替代 INSERT OR REPLACE
+                sql = """
+                    INSERT INTO daily_recommendations 
                     (uid, stock_code, date, tech_action, tech_reason, sent_action, sent_reason, price)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (uid, stock_code, date, tech_res['action'], tech_res['reason'], 
-                      sent_res['action'], sent_res['reason'], price))
+                    VALUES (:uid, :code, :date, :ta, :tr, :sa, :sr, :price)
+                    ON CONFLICT (uid, stock_code, date)
+                    DO UPDATE SET 
+                        tech_action = EXCLUDED.tech_action,
+                        tech_reason = EXCLUDED.tech_reason,
+                        sent_action = EXCLUDED.sent_action,
+                        sent_reason = EXCLUDED.sent_reason,
+                        price = EXCLUDED.price
+                """
+                conn.execute(text(sql), {
+                    "uid": uid, "code": stock_code, "date": date, 
+                    "ta": tech_res['action'], "tr": tech_res['reason'],
+                    "sa": sent_res['action'], "sr": sent_res['reason'],
+                    "price": price
+                })
+                conn.commit()
                 return True
         except Exception as e:
             print(f"保存每日建议失败: {e}")
@@ -191,29 +178,39 @@ class DBManager:
         """获取历史建议，如果提供日期则查询特定日期"""
         with self._get_connection() as conn:
             if date:
-                query = "SELECT * FROM daily_recommendations WHERE uid = ? AND date = ? ORDER BY created_at DESC"
-                return pd.read_sql_query(query, conn, params=(uid, date))
+                # 注意：pd.read_sql 最好用 %(name)s 风格传参
+                query = "SELECT * FROM daily_recommendations WHERE uid = %(uid)s AND date = %(date)s ORDER BY created_at DESC"
+                return pd.read_sql_query(query, conn, params={"uid": uid, "date": date})
             else:
-                query = "SELECT DISTINCT date FROM daily_recommendations WHERE uid = ? ORDER BY date DESC"
-                return pd.read_sql_query(query, conn, params=(uid,))
+                query = "SELECT DISTINCT date FROM daily_recommendations WHERE uid = %(uid)s ORDER BY date DESC"
+                return pd.read_sql_query(query, conn, params={"uid": uid})
 
     def get_recommendations_by_date(self, uid, date):
         """获取特定日期的所有建议"""
         with self._get_connection() as conn:
-            query = "SELECT * FROM daily_recommendations WHERE uid = ? AND date = ?"
-            return pd.read_sql_query(query, conn, params=(uid, date))
+            query = "SELECT * FROM daily_recommendations WHERE uid = %(uid)s AND date = %(date)s"
+            return pd.read_sql_query(query, conn, params={"uid": uid, "date": date})
+            
     def log_token_usage(self, uid, action_type, stock_code, prompt, completion):
         """记录并累加用户的 token 消耗"""
         total = prompt + completion
         try:
             with self._get_connection() as conn:
                 # 1. 记录明细
-                conn.execute('''
-                    INSERT INTO token_logs (uid, action_type, stock_code, prompt_tokens, completion_tokens, total_tokens)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (uid, action_type, stock_code, prompt, completion, total))
+                conn.execute(
+                    text('''
+                        INSERT INTO token_logs (uid, action_type, stock_code, prompt_tokens, completion_tokens, total_tokens)
+                        VALUES (:uid, :type, :code, :pt, :ct, :tt)
+                    '''), 
+                    {"uid": uid, "type": action_type, "code": stock_code, "pt": prompt, "ct": completion, "tt": total}
+                )
+                
                 # 2. 累加到用户主表
-                conn.execute('UPDATE users SET total_tokens = total_tokens + ? WHERE uid = ?', (total, uid))
+                conn.execute(
+                    text('UPDATE users SET total_tokens = total_tokens + :tt WHERE uid = :uid'), 
+                    {"tt": total, "uid": uid}
+                )
+                conn.commit()
                 return True
         except Exception as e:
             print(f"Token 日志失败: {e}")

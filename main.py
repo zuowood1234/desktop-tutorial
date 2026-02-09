@@ -38,27 +38,34 @@ def get_market_index_change():
     return 0.0
 
 def get_market_status():
-    """判定当前 A 股市场交易状态"""
-    now = datetime.datetime.now()
+    """判定当前 A 股市场交易状态 (强制使用 UTC+8 时间)"""
+    from datetime import datetime, timezone, timedelta
+    
+    # 强制转换为北京时间 (UTC+8)
+    tz_cn = timezone(timedelta(hours=8))
+    now = datetime.now(tz_cn)
+    
+    current_time = now.time()
+    
+    # 定义时间节点
+    t_930 = datetime.strptime("09:30:00", "%H:%M:%S").time()
+    t_1130 = datetime.strptime("11:30:00", "%H:%M:%S").time()
+    t_1300 = datetime.strptime("13:00:00", "%H:%M:%S").time()
+    t_1500 = datetime.strptime("15:00:00", "%H:%M:%S").time()
+    
     if now.weekday() >= 5: # 周六周日
         return "🔴 休市中 (周末)", False
     
-    current_time = now.time()
-    am_start = datetime.time(9, 30)
-    am_end = datetime.time(11, 30)
-    pm_start = datetime.time(13, 0)
-    pm_end = datetime.time(15, 0)
-    
-    if am_start <= current_time <= am_end:
+    if t_930 <= current_time <= t_1130:
         return "🟢 交易中 (上午盘)", True
-    elif am_end < current_time < pm_start:
+    elif t_1130 < current_time < t_1300:
         return "💤 盘间休息 (午休)", False
-    elif pm_start <= current_time <= pm_end:
+    elif t_1300 <= current_time <= t_1500:
         return "🟢 交易中 (下午盘)", True
-    elif current_time < am_start:
-        return "🕙 等待开盘", False
-    else:
+    elif current_time > t_1500:
         return "🔴 已收盘 (盘后数据)", False
+    else:
+        return "🕙 等待开盘", False
 
 def get_stock_data(symbol):
     """获取 A 股历史行情数据"""
