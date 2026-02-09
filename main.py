@@ -13,18 +13,13 @@ API_KEY = os.getenv("DEEPSEEK_API_KEY")
 BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
+from stock_names import get_stock_name_offline
+
 def get_stock_name(symbol):
     """
-    获取股票中文名称
+    获取股票中文名称 (转发至更健壮的 offline/cloud 模块)
     """
-    try:
-        df = ak.stock_individual_info_em(symbol=symbol)
-        name_row = df[df['item'] == '股票简称']
-        if not name_row.empty:
-            return name_row.iloc[0]['value']
-        return symbol
-    except:
-        return symbol
+    return get_stock_name_offline(symbol)
 
 def get_market_index_change():
     """获取上证指数当前的涨跌幅，作为市场情绪参考"""

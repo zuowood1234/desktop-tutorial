@@ -25,13 +25,35 @@ class DBManager:
         if self.db_url.startswith("postgres://"):
             self.db_url = self.db_url.replace("postgres://", "postgresql://", 1)
             
-        self.engine = create_engine(self.db_url)
-        # 注意：这里不再调用 _init_db，因为迁移脚本已经负责了建表。
-        # 如果需要确保表存在，可以在这里加检查逻辑，但通常由迁移脚本管理。
+        # 🔧 增强的连接池配置，防止 SSL EOF 错误
+        self.engine = create_engine(
+            self.db_url,
+            pool_pre_ping=True,          # 使用前测试连接是否有效
+            pool_recycle=600,             # 10分钟回收连接（防止空闲超时）
+            pool_size=5,                  # 连接池大小
+            max_overflow=10,              # 最大溢出连接数
+            connect_args={
+                "connect_timeout": 10,    # 连接超时
+                "keepalives": 1,          # 启用TCP keepalive
+                "keepalives_idle": 30,    # 30秒后发送keepalive
+                "keepalives_interval": 10,# keepalive间隔
+                "keepalives_count": 5     # 重试次数
+            }
+        )
         
     def _get_connection(self):
-        # SQLAlchemy connection
-        return self.engine.connect()
+        """获取数据库连接（带自动重试）"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                return self.engine.connect()
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(0.5 * (attempt + 1))  # 指数退避
+                    continue
+                else:
+                    raise  # 最后一次失败则抛出异常
 
     # --- 用户管理 ---
     def register_user(self, username, email, password, role='user'):

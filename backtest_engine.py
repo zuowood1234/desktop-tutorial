@@ -74,95 +74,7 @@ def get_market_context(date_str, df_stock):
     except:
         return {"market_change": 0.0, "volume_ratio": 1.0}
 
-def get_ai_advice_pure_technical(client, symbol, dates, batch_text):
-    """策略C：纯技术面"""
-    prompt = f"""
-你是 A 股短线交易员。根据技术数据预测操作：
 
-股票: {symbol}
-{batch_text}
-
-要求：对每天给出【买入】/【卖出】/【持有】/【观望】，格式：日期|操作|理由
-
-示例：
-2024-11-01|买入|超跌反弹
-"""
-    
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": "你是技术分析师。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-        )
-        
-        result = []
-        for line in response.choices[0].message.content.strip().split('\n'):
-            if '|' in line:
-                parts = line.split('|')
-                if len(parts) >= 3:
-                    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', parts[0])
-                    if date_match:
-                        result.append({
-                            "date": date_match.group(1),
-                            "action": parts[1].strip(),
-                            "reason": parts[2].strip()
-                        })
-        return result
-    except Exception as e:
-        logging.error(f"纯技术AI失败: {e}")
-        return []
-
-def get_ai_advice_with_sentiment(client, symbol, dates, batch_text, market_contexts):
-    """策略D：情绪增强"""
-    enhanced_text = ""
-    for date in dates:
-        ctx = market_contexts.get(date, {"market_change": 0, "volume_ratio": 1})
-        for line in batch_text.split('\n'):
-            if date in line:
-                enhanced_text += f"{line} | 大盘:{ctx['market_change']:.2f}% | 量比:{ctx['volume_ratio']:.2f}\n"
-                break
-    
-    prompt = f"""
-你是 A 股短线交易员。综合技术面和市场情绪预测操作：
-
-股票: {symbol}
-{enhanced_text}
-
-要求：综合考虑技术、大盘、量能，对每天给出【买入】/【卖出】/【持有】/【观望】，格式：日期|操作|理由
-
-示例：
-2024-11-01|买入|大盘企稳+量能放大
-"""
-    
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": "你综合市场情绪和技术面。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-        )
-        
-        result = []
-        for line in response.choices[0].message.content.strip().split('\n'):
-            if '|' in line:
-                parts = line.split('|')
-                if len(parts) >= 3:
-                    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', parts[0])
-                    if date_match:
-                        result.append({
-                            "date": date_match.group(1),
-                            "action": parts[1].strip(),
-                            "reason": parts[2].strip()
-                        })
-        return result
-    except Exception as e:
-        logging.error(f"情绪增强AI失败: {e}")
-        return []
 
 def run_compare_backtest(symbol, days=90):
     """
@@ -171,21 +83,66 @@ def run_compare_backtest(symbol, days=90):
     stock_name = get_stock_name(symbol)
     logging.info(f"🚀 [{symbol} {stock_name}] 开始双AI对比回测...")
     
-    # 1. 获取数据
+    # 1. 获取数据 (尝试使用新浪财经作为备用源，因为 AkShare 东财源连接失败)
     end_date = datetime.datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.datetime.now() - datetime.timedelta(days=days + 30)).strftime("%Y%m%d")
+    start_date = (datetime.datetime.now() - datetime.timedelta(days=days + 60)).strftime("%Y%m%d") # 多取一点缓冲
     
+    df_all = None
+    
+    # 尝试方案 A: 新浪财经接口 (无需代理通常较稳)
     try:
+        # 转换代码格式: 600519 -> sh600519, 000001 -> sz000001
+        sina_symbol = f"sh{symbol}" if symbol.startswith('6') else f"sz{symbol}"
+        url = f"https://q.stock.sohu.com/hisHq?code=cn_{symbol}&start={start_date}&end={end_date}"
+        # 搜狐/新浪历史数据有时候不稳定，尝试使用更简单的网易财经或直接 requests
+        
+        # 这里为了稳妥，我们手动实现一个简单的新浪日线抓取，或者继续尝试 akshare 的其他接口
         import akshare as ak
-        df_all = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
-    except Exception as e:
-        logging.error(f"数据获取失败: {e}")
-        return None
+        # 尝试使用 akshare 的 index_zh_a_hist (虽然是指数，但个股也有其他接口)
+        # 改用: stock_zh_a_daily (新浪源)
+        df_all = ak.stock_zh_a_daily(symbol=sina_symbol, start_date=start_date, end_date=end_date)
+        
+        # 调试: 打印返回的列
+        logging.info(f"新浪源返回列名: {df_all.columns}")
+        
+        # 新浪源通常返回: date, open, high, low, close, volume, amount, turn...
+        # 我们只需要前6个关键列
+        rename_map = {
+            'date': '日期', 
+            'open': '开盘', 
+            'high': '最高', 
+            'low': '最低', 
+            'close': '收盘', 
+            'volume': '成交量'
+        }
+        df_all = df_all.rename(columns=rename_map)
+        
+        # 确保包含必要的列
+        required_cols = ['日期', '开盘', '最高', '收盘', '最低', '成交量']
+        for col in required_cols:
+            if col not in df_all.columns:
+                 # 如果是中文列名 (可能是不同版本的akshare)
+                 pass 
+        
+        # 计算涨跌幅
+        df_all['收盘'] = pd.to_numeric(df_all['收盘'])
+        df_all['涨跌幅'] = df_all['收盘'].pct_change() * 100
+        df_all['涨跌幅'] = df_all['涨跌幅'].fillna(0)
+        
+    except Exception as e_sina:
+        logging.warning(f"新浪源失败: {e_sina}, 尝试回退到东财源...")
+        try:
+            import akshare as ak
+            df_all = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
+        except Exception as e:
+             logging.error(f"所有数据源均失败: {e}")
+             return None
 
     if df_all is None or df_all.empty:
         return None
 
-    df_all['日期'] = df_all['日期'].astype(str)
+    # 统一日期格式
+    df_all['日期'] = pd.to_datetime(df_all['日期']).dt.strftime('%Y-%m-%d')
     total_len = len(df_all)
     start_index = max(0, total_len - days)
 
@@ -194,52 +151,150 @@ def run_compare_backtest(symbol, days=90):
     for i in range(start_index, total_len):
         date_str = df_all.iloc[i]['日期']
         market_contexts[date_str] = get_market_context(date_str, df_all)
-    
-    # 3. 准备批次数据
+        
+    # 初始化 DeepSeek 客户端
     BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
-
-    BATCH_SIZE = 5
-    batch_tasks = []
-    current_batch_dates = []
-    current_batch_text = ""
+    
+    # 4. 严格逐日回测 (防止未来函数/数据对齐作弊)
+    # 4. 严格逐日回测 (防止未来函数/数据对齐作弊)
+    advice_pure = {}
+    advice_sentiment = {}
+    
+    # 初始化持仓状态 (False=空仓, True=持仓)
+    # 简单的假设：每次买入满仓，卖出空仓
+    pos_pure = False 
+    pos_sent = False
+    
+    print(f"🧠 开始严格逐日回测 (共 {total_len} 个交易日) [含持仓感知]...")
+    
+    # 维护一个滚动的历史数据窗口
+    history_window = []
     
     for i in range(start_index, total_len - 1):
         today_row = df_all.iloc[i]
         date_str = str(today_row['日期'])
-        line = f"{date_str} | 收:{today_row['收盘']:.2f} | 涨:{today_row['涨跌幅']:.2f}%"
         
-        current_batch_dates.append(date_str)
-        current_batch_text += line + "\n"
+        # 1. 构建截至今日的历史窗口
+        # 为了节省 Token，只取最近 10 天的数据传给 AI
+        history_window.append({
+            "date": date_str,
+            "close": today_row['收盘'],
+            "pct": today_row['涨跌幅'],
+            "vol": today_row['成交量']
+        })
         
-        if len(current_batch_dates) == BATCH_SIZE or i == total_len - 2:
-            batch_tasks.append((list(current_batch_dates), str(current_batch_text)))
-            current_batch_dates = []
-            current_batch_text = ""
+        recent_data = history_window[-10:] # 只看最近10天
+        
+        # 构建 Prompt 文本 (K线数据)
+        k_lines_text = ""
+        sent_enhanced_text = ""
+        
+        for item in recent_data:
+            d = item['date']
+            line = f"{d} | 收:{item['close']:.2f} | 涨:{item['pct']:.2f}%"
+            k_lines_text += line + "\n"
+            
+            # 情绪数据
+            ctx = market_contexts.get(d, {"market_change": 0, "volume_ratio": 1})
+            sent_enhanced_text += f"{line} | 大盘:{ctx['market_change']:.2f}% | 量比:{ctx['volume_ratio']:.2f}\n"
 
-    # 4. 调用双AI获取建议
-    advice_pure = {}  # 纯技术
-    advice_sentiment = {}  # 情绪增强
-    
-    print(f"🧠 正在获取双AI建议（共{len(batch_tasks)}批）...")
-    for dates, text in batch_tasks:
-        # 纯技术
-        result_pure = get_ai_advice_pure_technical(client, symbol, dates, text)
-        for item in result_pure:
-            d = str(item.get("date")).strip()
-            if d:
-                advice_pure[d] = (item.get("action", "观望"), item.get("reason", ""))
+        # === 动态 Prompt 构建函数 ===
+        def build_prompt(strategy_name, data_text, is_holding):
+            status_str = "【当前持仓：持有中】" if is_holding else "【当前持仓：空仓】"
+            action_guide = ""
+            if is_holding:
+                action_guide = "你现在持有该股。请决策：是【持有】等待上涨，还是【卖出】止盈止损？(除非由于极大风险，否则不要轻易卖出)"
+            else:
+                action_guide = "你现在空仓。请决策：是继续【观望】，还是【买入】搏取收益？(只有出现明确买点才买入)"
+            
+            return f"""
+你是 A 股短线交易员。{status_str}
+基于以下最近 10 天的行情，判断【今天】({date_str}) 的操作：
+
+{data_text}
+
+交易指引：{action_guide}
+
+要求：请严格按照格式输出：操作|理由
+操作只能是【买入】/【卖出】/【持有】/【观望】中的一个。
+理由请简短概括，不超过10个字。
+
+示例：
+买入|放量突破
+卖出|高位滞涨
+"""
+
+        # 2. 调用 AI (纯技术)
+        prompt_pure = build_prompt("纯技术", k_lines_text, pos_pure)
+        try:
+            resp = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt_pure}],
+                temperature=0.1
+            )
+            content = resp.choices[0].message.content.strip()
+            parts = content.split('|')
+            action = parts[0].strip()
+            reason = parts[1].strip() if len(parts) > 1 else "AI未提供理由"
+            
+            # 清洗动作
+            valid_action = "观望"
+            if "买" in action: valid_action = "买入"
+            elif "卖" in action: valid_action = "卖出"
+            elif "持" in action: valid_action = "持有"
+            
+            # 自动纠错：如果空仓却说持有 -> 视为观望；如果持仓却说买入 -> 视为持有
+            if not pos_pure and valid_action == "持有": valid_action = "观望"
+            if pos_pure and valid_action == "买入": valid_action = "持有"
+            
+            advice_pure[date_str] = (valid_action, reason)
+            
+            # 更新模拟持仓状态 (用于下一天的 Prompt)
+            if valid_action == "买入": pos_pure = True
+            elif valid_action == "卖出": pos_pure = False
+            
+        except Exception as e:
+            logging.error(f"技术派逐日失败 {date_str}: {e}")
+            advice_pure[date_str] = ("观望", "API错误")
+
+        # 3. 调用 AI (情绪增强)
+        prompt_sent = build_prompt("情绪增强", sent_enhanced_text, pos_sent)
+        try:
+            resp = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt_sent}],
+                temperature=0.1
+            )
+            content = resp.choices[0].message.content.strip()
+            parts = content.split('|')
+            action = parts[0].strip()
+            reason = parts[1].strip() if len(parts) > 1 else "AI未提供理由"
+
+            valid_action = "观望"
+            if "买" in action: valid_action = "买入"
+            elif "卖" in action: valid_action = "卖出"
+            elif "持" in action: valid_action = "持有"
+            
+            # 自动纠错
+            if not pos_sent and valid_action == "持有": valid_action = "观望"
+            if pos_sent and valid_action == "买入": valid_action = "持有"
+            
+            advice_sentiment[date_str] = (valid_action, reason)
+            
+            # 更新模拟持仓状态
+            if valid_action == "买入": pos_sent = True
+            elif valid_action == "卖出": pos_sent = False
+
+        except Exception as e:
+            logging.error(f"情绪派逐日失败 {date_str}: {e}")
+            advice_sentiment[date_str] = ("观望", "API错误")
+            
+        # 打印进度 (不换行)
+        print(f"\r📅 进度: {date_str} 完成", end="", flush=True)
+        # time.sleep(0.1) # 极速模式，不等待
         
-        # 情绪增强
-        result_sent = get_ai_advice_with_sentiment(client, symbol, dates, text, market_contexts)
-        for item in result_sent:
-            d = str(item.get("date")).strip()
-            if d:
-                advice_sentiment[d] = (item.get("action", "观望"), item.get("reason", ""))
-        
-        time.sleep(0.5)  # 避免请求过快
-    
-    print(f"✅ 纯技术AI建议：{len(advice_pure)}条 | 情绪增强AI建议：{len(advice_sentiment)}条")
+    print(f"\n✅ 逐日回测完成！")
 
     # 5. 双策略回测（都用尾盘买入）
     initial_cash = 1000000.0
@@ -310,7 +365,7 @@ def run_compare_backtest(symbol, days=90):
             "当日盈亏(纯技术)": round(pnl_c, 2),
             "总资产(纯技术)": round(asset_c, 2),
             
-            "AI建议(情绪增强)": action_d,
+            "AI建議(情绪增强)": action_d,
             "理由(情绪增强)": reason_d,
             "操作(情绪增强)": executed_d,
             "持仓(情绪增强)": pos_d,
@@ -343,13 +398,22 @@ def run_compare_backtest(symbol, days=90):
     }
 
 if __name__ == "__main__":
-    stocks_input = input("请输入股票代码(逗号分隔): ")
+    import sys
+    
+    # 支持命令行参数传参，方便 app.py 调用
+    if len(sys.argv) > 1:
+        # 假设参数格式如: python backtest_engine.py 600519,000001
+        stocks_input = sys.argv[1]
+    else:
+        stocks_input = input("请输入股票代码(逗号分隔): ")
+        
     stocks = [s.strip() for s in stocks_input.split(",") if s.strip()]
     if not stocks:
         stocks = ["600519"]
     
-    # 多周期对比：30/60/90天
-    periods = [30, 60, 90]
+    # 默认仅回测最近 30 天 (约5-8分钟)，以免时间过长
+    # 如果需要长周期，可改为 [30, 60, 90]
+    periods = [30]
     all_results = {}  # {stock: {30: result, 60: result, 90: result}}
     
     for stock in stocks:
@@ -407,11 +471,16 @@ if __name__ == "__main__":
         summary_df.to_csv("backtest_compare_summary.csv", index=False, encoding='utf-8-sig')
         print("\n✅ backtest_compare_summary.csv 已保存")
         
-        # 详细日志（只保存90天的，因为包含了最多信息）
+        # 详细日志 (保存所有生成周期的详情，这里优先保存30天的)
         all_details = []
         for stock, period_results in all_results.items():
-            if 90 in period_results:
-                r = period_results[90]
+            # 优先 90 > 60 > 30 
+            target_p = 30
+            if 90 in period_results: target_p = 90
+            elif 60 in period_results: target_p = 60
+            
+            if target_p in period_results:
+                r = period_results[target_p]
                 d_df = pd.DataFrame(r['details'])
                 d_df.insert(0, '代码', r['symbol'])
                 d_df.insert(1, '名称', r['stock_name'])
@@ -420,7 +489,7 @@ if __name__ == "__main__":
         if all_details:
             master_df = pd.concat(all_details, ignore_index=True)
             master_df.to_csv("backtest_compare_details.csv", index=False, encoding='utf-8-sig')
-            print(f"✅ backtest_compare_details.csv 已保存 (90天详情，共 {len(master_df)} 条)")
+            print(f"✅ backtest_compare_details.csv 已保存 (共 {len(master_df)} 条)")
     else:
         print("❌ 没有结果")
 
