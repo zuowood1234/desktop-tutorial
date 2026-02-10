@@ -78,6 +78,55 @@ if st.session_state.user_id is None:
                         st.error(msg)
     st.stop()
 
+# ==================== 🚀 自动化引擎：盘后自动检查 ====================
+# 逻辑：每次有人访问页面时，检查当前是否为盘后 (15:15后)，且今日是否已运行过任务。
+# 如果是盘后且未运行，则自动触发。
+def check_and_run_auto_analysis():
+    # 简单的防抖动机制，避免同一分钟内多人触发
+    now = datetime.now()
+    
+    # 1. 必须是工作日 (周一到周五: 0-4)
+    if now.weekday() > 4:
+        return
+
+    # 2. 必须是 A 股收盘后 (为了保险，定在 15:15)
+    market_close_time = now.replace(hour=15, minute=15, second=0, microsecond=0)
+    if now < market_close_time:
+        return
+
+    # 3. 检查数据库中最新的记录日期
+    try:
+        today_str = now.strftime("%Y-%m-%d")
+        
+        # 检查标记位 (使用 session_state 避免单次访问重复查库，虽然跨会话无效)
+        if 'daily_check_done' in st.session_state and st.session_state.daily_check_done == today_str:
+            return
+
+        has_run = db.check_if_daily_analysis_run(today_str)
+        if not has_run:
+            status_text.text(f"正在后台生成 {today_str} 收盘数据...")
+            with st.spinner(f"🤖 下午好！系统正在自动执行【今日收盘复盘】，请稍候..."):
+                # 动态导入防止循环引用
+                from auto_daily_analysis import run_auto_daily_analysis
+                run_auto_daily_analysis()
+                st.toast(f"✅ 今日收盘数据已自动生成！", icon="🎉")
+                time.sleep(1) # 给用户一点反应时间
+        
+        # 标记本次会话已检查
+        st.session_state.daily_check_done = today_str
+            
+    except Exception as e:
+        print(f"⚠️ [AutoScheduler] 自动任务异常: {e}")
+
+# 在渲染主界面样式前尝试运行
+status_text = st.empty() # 占位符
+try:
+    check_and_run_auto_analysis()
+    status_text.empty() # 清除占位符
+except Exception as e:
+    status_text.empty()
+    print(f"Auto-run skipped: {e}")
+
 # 全局样式 - 统一字号
 st.markdown("""
 <style>
@@ -280,6 +329,21 @@ if page == "📅 每日建议":
     st.title("📅 每日收盘建议回顾")
     st.markdown("系统每天收盘后会自动分析您的自选股并存档，您可以在此翻看历史记录。")
     
+    # --- 新增：手动补录功能 ---
+    with st.expander("🛠️ 没看到今日数据？点此手动生成", expanded=False):
+        st.warning("如果系统未自动运行，您可以手动触发。请仅在收盘后（15:00 后）使用。")
+        if st.button("🔄 立即生成今日复盘 (补录)", use_container_width=True):
+            with st.spinner("正在后台执行全量自选股分析，请勿离开..."):
+                try:
+                    # 尝试导入并运行自动化脚本
+                    from auto_daily_analysis import run_auto_daily_analysis
+                    run_auto_daily_analysis()
+                    st.success("✅ 补录成功！请刷新页面查看。")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"执行失败: {str(e)}")
+
     # 1. 获取有记录的所有日期
     dates_df = db.get_daily_recommendations(st.session_state.user_id)
     
@@ -288,7 +352,7 @@ if page == "📅 每日建议":
     else:
         # 日期选择器
         dates_list = dates_df['date'].tolist()
-        selected_date = st.selectbox("📅 选择日期查看存档", dates_list)
+        selected_date = st.selectbox("📅 选择日期查看存档", dates_list, index=0) # 默认选最新的
         
         if selected_date:
             recs_df = db.get_recommendations_by_date(st.session_state.user_id, selected_date)
@@ -296,38 +360,71 @@ if page == "📅 每日建议":
             if recs_df.empty:
                 st.warning(f"未找到 {selected_date} 的详细建议。")
             else:
-                st.markdown(f"### 📋 {selected_date} 自动建议报告")
+                st.markdown(f"### 📋 {selected_date} 复盘报告")
                 
-                # 汇总视图
-                with st.expander("📍 快速概览", expanded=False):
-                    st.table(recs_df[['stock_code', 'price', 'tech_action', 'sent_action']])
+                # --- 1. 汇总表格视图 (仿实时分析) ---
+                # 构造符合展示的 DataFrame
+                display_rows = []
+                for _, row in recs_df.iterrows():
+                    s_code = row['stock_code']
+                    # 尝试获取名称
+                    s_name = get_stock_name_offline(s_code)
+                    
+                    display_rows.append({
+                        "代码": s_code,
+                        "名称": s_name,
+                        "收盘价": f"¥{row['price']:.2f}",
+                        "技术派建议": row['tech_action'],
+                        "情绪派建议": row['sent_action'],
+                        # 简单判断一致性
+                        "共振信号": "✅" if row['tech_action'] == row['sent_action'] else "⚠️ 分歧"
+                    })
+                
+                st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
                 
                 st.divider()
+                st.subheader("🔍 深度拆解 (点击展开详情)")
                 
-                # 详细卡片视图
+                # --- 2. 详细卡片视图 (仿实时分析) ---
                 for _, row in recs_df.iterrows():
                     s_code = row['stock_code']
                     stock_name = get_stock_name_offline(s_code)
                     
-                    with st.container():
-                        st.markdown(f"#### 🏷️ {stock_name} ({s_code}) | 收盘: ¥{row['price']:.2f}")
+                    # 使用 expander 保持页面整洁，和实时分析保持一致体验
+                    with st.expander(f"📊 {stock_name} ({s_code}) | 收盘: ¥{row['price']:.2f} | 建议: {row['tech_action']} / {row['sent_action']}", expanded=False):
                         
                         col_t, col_s = st.columns(2)
+                        
+                        # 技术派卡片
                         with col_t:
-                            st.markdown("🍏 **技术派**")
-                            st.info(f"建议: **{row['tech_action']}**\n\n依据: {row['tech_reason']}")
-                        
-                        with col_s:
-                            st.markdown("🍊 **情绪增强派**")
-                            st.success(f"建议: **{row['sent_action']}**\n\n依据: {row['sent_reason']}")
+                            st.markdown("#### 🍏 V1 纯技术派")
+                            if "买" in row['tech_action']:
+                                st.success(f"**{row['tech_action']}**")
+                            elif "卖" in row['tech_action']:
+                                st.error(f"**{row['tech_action']}**")
+                            else:
+                                st.info(f"**{row['tech_action']}**")
                             
-                        # 共振逻辑
-                        if row['tech_action'] == row['sent_action']:
-                            st.caption("✅ 信号共振：双派系意见一致")
-                        else:
-                            st.caption("⚠️ 信号背离：建议分步操作")
+                            st.markdown(f"> **理由**: {row['tech_reason']}")
+
+                        # 情绪派卡片
+                        with col_s:
+                            st.markdown("#### 🍊 V2 情绪增强派")
+                            if "买" in row['sent_action']:
+                                st.success(f"**{row['sent_action']}**")
+                            elif "卖" in row['sent_action']:
+                                st.error(f"**{row['sent_action']}**")
+                            else:
+                                st.info(f"**{row['sent_action']}**")
+                            
+                            st.markdown(f"> **理由**: {row['sent_reason']}")
                         
-                        st.divider()
+                        # 底部共振提示
+                        st.markdown("---")
+                        if row['tech_action'] == row['sent_action']:
+                            st.caption("✨ **信号共振**：双AI达成一致，信号可信度高。")
+                        else:
+                            st.caption("⚡ **信号分歧**：技术面与情绪面存在冲突，建议控制仓位，参考 V2 稳健派意见。")
 
 # ==================== 页面2：我的自选 (新) ====================
 if page == "⭐ 我的自选":
