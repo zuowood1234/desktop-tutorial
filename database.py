@@ -33,6 +33,7 @@ class DBManager:
             pool_size=5,                  # 连接池大小
             max_overflow=10,              # 最大溢出连接数
             connect_args={
+                "sslmode": "require",      # 强制启用 SSL，解决云端连接报错
                 "connect_timeout": 10,    # 连接超时
                 "keepalives": 1,          # 启用TCP keepalive
                 "keepalives_idle": 30,    # 30秒后发送keepalive
