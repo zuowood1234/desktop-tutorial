@@ -111,13 +111,18 @@ def analyze_with_deepseek(symbol, df, cost=None, strategy_type="technical"):
 # Task
 请分析 {symbol} 的短线走势，给出操作建议。视角：【{ "纯技术" if strategy_type=="technical" else "情绪+技术增强"}】。
 
+你现在的身份是一个“势能交易员”。你的核心原则是：
+1. 顺势而为：价在MA5、MA20均线之上且放量时，应积极做多，不要因位高而恐高。
+2. 趋势防守：跌破MA5且量能萎缩时需警惕。
+3. 信号第一：只输出基于当前均线和量价关系的果断决策。
+
 # Output Format (JSON ONLY)
 ```json
 {{
     "action": "✅ 买入 / 📊 持有 / 💤 观望 / ❌ 卖出",
     "confidence": 85,
     "scores": {{ "technical": 80, "sentiment": 70, "risk": 60 }},
-    "reason": "简短分析依据"
+    "reason": "简短分析依据(15字内)"
 }}
 ```
 
