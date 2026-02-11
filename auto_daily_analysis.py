@@ -1,18 +1,14 @@
 import time
 import datetime
 from database import DBManager
-from main import get_stock_data, analyze_with_deepseek, get_market_status
+from main import get_stock_data
+from backtest_engine import BacktestEngine
 import pandas as pd
 
 def run_auto_daily_analysis():
-    print(f"🚀 [{datetime.datetime.now()}] 启动每日全量自选股自动分析任务...")
+    print(f"🚀 [{datetime.datetime.now()}] 启动每日全量自选股自动分析任务 (V1-V3)...")
     
     db = DBManager()
-    
-    # 获取当前市场日期
-    now = datetime.datetime.now()
-    # 如果是交易时段，保存为当日；如果是深夜，保存为当日收盘
-    date_str = now.strftime('%Y-%m-%d')
     
     # 1. 获取所有用户
     users_df = db.get_all_users()
@@ -20,54 +16,104 @@ def run_auto_daily_analysis():
         print("ℹ️ 暂无用户，任务结束。")
         return
 
-    # 简单的去重逻辑：按股票代码分析，然后同步给所有自选该股的用户
-    # (为了节省 API 额度，不按用户跑，按股票跑)
-    
+    # 2. 收集所有唯一的自选股 (去重分析)
     all_watchlist = []
     for _, user in users_df.iterrows():
         watchlist = db.get_user_watchlist(user['uid'])
         if not watchlist.empty:
-            watchlist['uid'] = user['uid']
-            all_watchlist.append(watchlist)
+            # 记录这只股票属于哪些用户
+            for _, row in watchlist.iterrows():
+                all_watchlist.append({
+                    "uid": user['uid'],
+                    "stock_code": row['stock_code']
+                })
             
     if not all_watchlist:
         print("ℹ️ 暂无自选股数据。")
         return
         
-    master_df = pd.concat(all_watchlist)
+    master_df = pd.DataFrame(all_watchlist)
     unique_stocks = master_df['stock_code'].unique()
     
     print(f"📊 共有 {len(users_df)} 名用户，共需分析 {len(unique_stocks)} 只唯一股票。")
     
-    # 存储分析结果缓存，避免重复请求同一只股票
+    # 3. 逐个分析
     analysis_cache = {}
     
     for stock in unique_stocks:
-        print(f"🔎 正在分析 {stock}...")
         try:
+            # 获取数据 (含实时)
             df, error = get_stock_data(stock)
             if df is not None and not df.empty:
-                # 获取双策略分析
-                res_tech = analyze_with_deepseek(stock, df, strategy_type="technical")
-                res_sent = analyze_with_deepseek(stock, df, strategy_type="sentiment")
-                price = float(df.iloc[-1]['收盘'])
+                # 重命名列以适配 Engine
+                rename_map = {
+                    '日期': 'date', '收盘': 'close', '开盘': 'open',
+                    '最高': 'high', '最低': 'low', '成交量': 'volume',
+                    '涨跌幅': 'pctChg'
+                }
+                cols = df.columns.tolist()
+                final_map = {}
+                for k, v in rename_map.items():
+                    if k in cols: final_map[k] = v
+                if final_map: df = df.rename(columns=final_map)
+                
+                # 兼容性检查
+                if 'close' not in df.columns: 
+                    # 尝试查找大小写不敏感匹配
+                    for col in df.columns:
+                        if col.lower() == 'close':
+                            df = df.rename(columns={col: 'close'})
+                        elif col.lower() == 'volume':
+                            df = df.rename(columns={col: 'volume'})
+                
+                if 'close' not in df.columns:
+                    print(f"  - {stock}: 缺少 close 列，跳过")
+                    continue
+                
+                # 初始化引擎
+                engine = BacktestEngine(stock)
+                engine.df = df
+                engine._calculate_indicators()
+                
+                if len(engine.df) < 2: continue
+                
+                # 取最后一行
+                latest_row = engine.df.iloc[-1]
+                prev_row = engine.df.iloc[-2]
+                
+                # 运行 V1, V2, V3
+                v1_act, v1_rsn, _ = engine.make_decision(latest_row, prev_row, 'Score_V1')
+                v2_act, v2_rsn, _ = engine.make_decision(latest_row, prev_row, 'Trend_V2')
+                v3_act, v3_rsn, _ = engine.make_decision(latest_row, prev_row, 'Oscillation_V3')
+                
+                date_val = latest_row['date']
+                if hasattr(date_val, 'strftime'):
+                    date_str = date_val.strftime('%Y-%m-%d')
+                else:
+                    date_str = str(date_val)
+                    # 如果只有时间没有日期，可能需要前面补
+                    if len(date_str) < 10: 
+                        date_str = datetime.date.today().strftime('%Y-%m-%d')
+                
+                price = float(latest_row['close'])
+                pct = float(latest_row['pctChg']) if 'pctChg' in latest_row else 0.0
                 
                 analysis_cache[stock] = {
-                    "tech": res_tech,
-                    "sent": res_sent,
+                    "date": date_str,
                     "price": price,
-                    "date": df.iloc[-1]['日期'] # 使用数据真实日期
+                    "pct_chg": pct,
+                    "v1_action": v1_act, "v1_reason": v1_rsn,
+                    "v2_action": v2_act, "v2_reason": v2_rsn,
+                    "v3_action": v3_act, "v3_reason": v3_rsn
                 }
-                # 记录 Token 消耗 (由管理员触发或系统运行，归入管理员或系统统计)
-                # 这里我们假设这种系统开销可以记录在触发者的 UID 下，或者单独记录
-                # 暂且记录各维度的 usage
-                time.sleep(1)
+                print(f"  ✅ {stock}: {v1_act}/{v2_act}/{v3_act}")
             else:
                 print(f"❌ 股票 {stock} 获取数据失败: {error}")
+                
         except Exception as e:
             print(f"💥 股票 {stock} 分析异常: {e}")
 
-    # 分发结果到各用户数据库记录
+    # 4. 分发结果到数据库
     count = 0
     for _, row in master_df.iterrows():
         uid = row['uid']
@@ -76,8 +122,15 @@ def run_auto_daily_analysis():
         if stock in analysis_cache:
             data = analysis_cache[stock]
             success = db.save_daily_recommendation(
-                uid, stock, data['date'], 
-                data['tech'], data['sent'], data['price']
+                uid=uid, 
+                stock_code=stock, 
+                date=data['date'], 
+                price=data['price'],
+                pct_chg=data['pct_chg'],
+                tech_action=data['v1_action'], tech_reason=data['v1_reason'][:50],
+                sent_action=data['v2_action'], sent_reason=data['v2_reason'][:50],
+                v3_action=data['v3_action'], v3_reason=data['v3_reason'][:50],
+                v4_action="未运行", v4_reason=""
             )
             if success: count += 1
             

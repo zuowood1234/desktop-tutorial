@@ -24,6 +24,16 @@ def get_db():
 
 db = get_db()
 
+# --- 缓存优化层 ---
+@st.cache_data(ttl=3600*24) # 股票名称缓存 24小时
+def get_cached_stock_name(code):
+    return get_stock_name_offline(code)
+
+@st.cache_data(ttl=60) # 每日任务状态缓存 1分钟
+def get_cached_daily_run_status(date_str):
+    # 使用全局 db 实例
+    return db.check_if_daily_analysis_run(date_str)
+
 # 设置网页
 st.set_page_config(page_title="AI 智能投顾", layout="wide", initial_sidebar_state="expanded")
 
@@ -109,7 +119,7 @@ def check_and_run_auto_analysis():
         if 'daily_check_done' in st.session_state and st.session_state.daily_check_done == today_str:
             return
 
-        has_run = db.check_if_daily_analysis_run(today_str)
+        has_run = get_cached_daily_run_status(today_str)
         if not has_run:
             status_text.text(f"正在后台生成 {today_str} 收盘数据...")
             with st.spinner(f"🤖 下午好！系统正在自动执行【今日收盘复盘】，请稍候..."):
@@ -202,7 +212,7 @@ st.sidebar.title(f"👤 {st.session_state.username}")
 if st.session_state.user_role == 'admin':
     st.sidebar.info("🔱 管理员模式")
 
-nav_options = ["📊 实时分析", "📅 每日建议", "⭐ 我的自选", "📈 历史回测", "📖 策略说明"]
+nav_options = ["📊 实时分析", "📅 每日建议", "⭐ 我的自选", "📖 策略说明"]
 if st.session_state.user_role == 'admin':
     nav_options.append("👑 管理后台")
 
@@ -369,69 +379,52 @@ if page == "📅 每日建议":
             else:
                 st.markdown(f"### 📋 {selected_date} 复盘报告")
                 
-                # --- 1. 汇总表格视图 (仿实时分析) ---
-                # 构造符合展示的 DataFrame
+                # --- 汇总表格视图 (只展示 V1-V3) ---
                 display_rows = []
                 for _, row in recs_df.iterrows():
                     s_code = row['stock_code']
                     # 尝试获取名称
-                    s_name = get_stock_name_offline(s_code)
+                    s_name = get_cached_stock_name(s_code)
+                    
+                    # 涨跌幅处理
+                    pct = row.get('pct_chg')
+                    if pct is None:
+                        pct_str = "--"
+                    else:
+                        pct_val = float(pct)
+                        pct_str = f"{pct_val:.2f}%"
+                    
+                    # 获取策略结果
+                    v1 = row.get('tech_action') or '未生成'
+                    v2 = row.get('sent_action') or '未生成'
+                    v3 = row.get('v3_action') or '未生成'
                     
                     display_rows.append({
                         "代码": s_code,
                         "名称": s_name,
-                        "收盘价": f"¥{row['price']:.2f}",
-                        "技术派建议": row['tech_action'],
-                        "情绪派建议": row['sent_action'],
-                        # 简单判断一致性
-                        "共振信号": "✅" if row['tech_action'] == row['sent_action'] else "⚠️ 分歧"
+                        "涨跌幅": pct_str,
+                        "V1 综合记分": v1,
+                        "V2 趋势猎手": v2,
+                        "V3 波段防御": v3
                     })
                 
-                st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+                # 展示简洁的大表格
+                st.dataframe(
+                    pd.DataFrame(display_rows), 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "代码": st.column_config.TextColumn("代码", width="small"),
+                        "名称": st.column_config.TextColumn("名称", width="small"),
+                        "涨跌幅": st.column_config.TextColumn("今日涨幅", width="small"),
+                        "V1 综合记分": st.column_config.TextColumn("V1 综合记分", width="medium"),
+                        "V2 趋势猎手": st.column_config.TextColumn("V2 趋势猎手", width="medium"),
+                        "V3 波段防御": st.column_config.TextColumn("V3 波段防御", width="medium"),
+                    }
+                )
                 
-                st.divider()
-                st.subheader("🔍 深度拆解 (点击展开详情)")
-                
-                # --- 2. 详细卡片视图 (仿实时分析) ---
-                for _, row in recs_df.iterrows():
-                    s_code = row['stock_code']
-                    stock_name = get_stock_name_offline(s_code)
-                    
-                    # 使用 expander 保持页面整洁，和实时分析保持一致体验
-                    with st.expander(f"📊 {stock_name} ({s_code}) | 收盘: ¥{row['price']:.2f} | 建议: {row['tech_action']} / {row['sent_action']}", expanded=False):
-                        
-                        col_t, col_s = st.columns(2)
-                        
-                        # 技术派卡片
-                        with col_t:
-                            st.markdown("#### 🍏 V1 纯技术派")
-                            if "买" in row['tech_action']:
-                                st.success(f"**{row['tech_action']}**")
-                            elif "卖" in row['tech_action']:
-                                st.error(f"**{row['tech_action']}**")
-                            else:
-                                st.info(f"**{row['tech_action']}**")
-                            
-                            st.markdown(f"> **理由**: {row['tech_reason']}")
-
-                        # 情绪派卡片
-                        with col_s:
-                            st.markdown("#### 🍊 V2 情绪增强派")
-                            if "买" in row['sent_action']:
-                                st.success(f"**{row['sent_action']}**")
-                            elif "卖" in row['sent_action']:
-                                st.error(f"**{row['sent_action']}**")
-                            else:
-                                st.info(f"**{row['sent_action']}**")
-                            
-                            st.markdown(f"> **理由**: {row['sent_reason']}")
-                        
-                        # 底部共振提示
-                        st.markdown("---")
-                        if row['tech_action'] == row['sent_action']:
-                            st.caption("✨ **信号共振**：双AI达成一致，信号可信度高。")
-                        else:
-                            st.caption("⚡ **信号分歧**：技术面与情绪面存在冲突，建议控制仓位，参考 V2 稳健派意见。")
+                if not display_rows:
+                    st.info("数据生成中或为空...")
 
 # ==================== 页面2：我的自选 (新) ====================
 if page == "⭐ 我的自选":
@@ -489,7 +482,7 @@ if page == "⭐ 我的自选":
             
         def get_name_cached(code):
             if code not in st.session_state.stock_names_cache:
-                st.session_state.stock_names_cache[code] = get_stock_name_offline(code)
+                st.session_state.stock_names_cache[code] = get_cached_stock_name(code)
             return st.session_state.stock_names_cache[code]
 
         watchlist_df['股票名称'] = watchlist_df['stock_code'].apply(get_name_cached)
@@ -624,19 +617,22 @@ if page == "📊 实时分析":
             selected_stocks = [s.strip() for s in re.split(r'[,，\n]', stocks_input) if s.strip()]
 
     # 分析流程逻辑
-    col1, col2, col3 = st.columns([1, 2, 1])
+    col1, col2 = st.columns(2)
+    with col1:
+        btn_quick = st.button("⚡ 快速扫描 (仅 V1-V3)", use_container_width=True, help="仅计算数学模型，速度快，无API消耗")
     with col2:
-        analyze_btn = st.button("🚀 开始全策略深度分析", use_container_width=True, type="primary")
+        btn_full = st.button("🧠 全策略分析 (含 AI)", use_container_width=True, type="primary")
     
-    if analyze_btn:
+    if btn_quick or btn_full:
         if not selected_stocks:
             st.error("⚠️ 请先选中要分析的股票（来自自选或手动输入）")
         else:
             # 引入新引擎
             from backtest_engine import BacktestEngine
             
+            mode_text = "全策略 (含AI)" if btn_full else "快速扫描 (V1-V3)"
             st.markdown("---")
-            st.subheader(f"📋 正在对 {len(selected_stocks)} 只股票进行 V1-V4 全策略扫描...")
+            st.subheader(f"📋 正在对 {len(selected_stocks)} 只股票进行 {mode_text}...")
             progress_bar = st.progress(0)
             
             new_results = []
@@ -647,7 +643,7 @@ if page == "📊 实时分析":
                         df, error = get_stock_data(stock)
                         
                         if df is not None and not df.empty:
-                            stock_name = get_stock_name_offline(stock)
+                            stock_name = get_cached_stock_name(stock)
                             
                             # === 数据列名适配 (中文 -> 英文) ===
                             # BacktestEngine 需要英文列名来计算指标
@@ -692,12 +688,14 @@ if page == "📊 实时分析":
                             v2_act, v2_rsn, v2_scr = engine.make_decision(latest_row, prev_row, 'Trend_V2')
                             v3_act, v3_rsn, v3_scr = engine.make_decision(latest_row, prev_row, 'Oscillation_V3')
                             
-                            # V4: 显式传入 API Key
-                            v4_key = os.getenv("OPENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
-                            
-                            # 如果有 DeepSeek 的 BASE_URL，也可以获取一下传进去 (虽然现在 BacktestEngine 还没处理 URL)
-                            # 这里暂时只传 Key
-                            v4_act, v4_rsn, v4_scr = engine.make_decision(latest_row, prev_row, 'AI_Agent_V4', api_key=v4_key)
+                            # V4: 根据按钮决定
+                            if btn_full:
+                                v4_key = os.getenv("OPENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
+                                v4_act, v4_rsn, v4_scr = engine.make_decision(latest_row, prev_row, 'AI_Agent_V4', api_key=v4_key)
+                            else:
+                                v4_act = "未启用"
+                                v4_rsn = "快速扫描模式跳过 AI 分析"
+                                v4_scr = 0
                             
                             latest_price = latest_row['close']
                             pct_chg = latest_row['pctChg'] if 'pctChg' in latest_row else 0
@@ -773,7 +771,8 @@ if page == "📊 实时分析":
                 
                 stock_label = f"{icon} **{res['名称']} ({res['代码']})** | {res['价格']} ({res['涨跌']})"
                 
-                with st.expander(stock_label, expanded=is_buy):
+                # 默认全部折叠 (expanded=False)，保持界面清爽
+                with st.expander(stock_label, expanded=False):
                     
                     # 使用 Tabs 展示四个策略
                     t1, t2, t3, t4 = st.tabs(["🤖 V1 综合记分", "🏹 V2 趋势猎手", "🛡️ V3 波段防御", "🧠 V4 AI智能体"])
@@ -810,7 +809,8 @@ if page == "📊 实时分析":
                             else:
                                 st.metric("V4 建议", res['V4建议'])
                         with c2:
-                            st.caption(f"**分析逻辑**: {res['V4理由']}")
+                            st.markdown("### 🧠 AI 分析逻辑")
+                            st.markdown(res['V4理由'])
 
             # 下载按钮
             csv = res_df.to_csv(index=False, encoding='utf-8-sig')
@@ -946,37 +946,4 @@ elif page == "📖 策略说明":
             st.write("- 不同的 AI 模型 (DeepSeek vs GPT) 风格不同。")
 
 
-# ==================== 页面3：历史回测 ====================
-elif page == "📈 历史回测":
-    st.title("📈 策略长跑英雄榜")
-    st.markdown("这里记录了 AI 投顾系统在历史长河中的实战表现。")
 
-    # --- 1. 年度英雄榜专区 ---
-    #版本选择
-    bt_v = st.radio("📈 选择策略版本", ["🥉 V1-V4 对比版 (2025新)", "🚀 旧版存档"], horizontal=True, key="backtest_ver")
-    
-    if "V1-V4" in bt_v:
-        annual_file = "2025_Complete_Strategy_Battle.xlsx" # 假设您之后会把 Excel 转 CSV 或直接读 Excel
-        # 这里暂时保留旧逻辑，您可能需要我之后再来更新回测页面的读取逻辑
-        # 为了不破坏现有页面，先展示一个简单的提示
-        st.info("🚧 V1-V4 的完整回测数据目前在后台生成了 Excel 报告，尚未集成到此 WEB 页面可视化。")
-        st.caption("请暂时通过 backend 查看 `2025_Complete_Strategy_Battle.xlsx`。")
-    else:
-        st.caption("旧版存档展示区域...")
-        # (这里可以保留旧的 CSV 读取逻辑，为节省篇幅略过，反正重点是上面的分析页)
-        
-    st.divider()
-
-    # --- 2. 手动回测入口 (特定权限) ---
-    st.subheader("🛠️ 发起新回测")
-    can_bt = st.session_state.get('can_backtest', False) or st.session_state.user_role == 'admin'
-    
-    if not can_bt:
-        st.warning("🔒 您当前没有回测权限，请联系管理员（admin）开通。")
-    else:
-        # 管理员可以手动输入代码
-        if st.session_state.user_role == 'admin':
-            with st.expander("👑 管理员控制台：手动发起 365 天大长跑", expanded=False):
-                admin_stocks = st.text_input("输入股票代码 (逗号分隔)", placeholder="例如: 600519, 000001", key="bt_admin_input")
-                if st.button("🔥 立即全量重跑", key="bt_run_btn"):
-                    st.info("功能维护中...")

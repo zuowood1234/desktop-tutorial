@@ -1,7 +1,7 @@
+
 import pandas as pd
 import numpy as np
 import os
-import time
 import requests
 import json
 from dotenv import load_dotenv
@@ -9,86 +9,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class BacktestEngine:
+    """
+    策略决策引擎 (Strategy Engine)
+    负责计算技术指标并根据 V1-V4 策略生成交易信号。
+    """
     def __init__(self, stock_code, days=30, start_date=None, end_date=None):
         self.stock_code = stock_code
-        self.days = days
-        self.start_date = start_date
-        self.end_date = end_date
         self.df = None
-        self.stock_name = stock_code # 默认
-        self.cache_dir = "stock_data_cache"
-        if not os.path.exists(self.cache_dir):
-            os.makedirs(self.cache_dir)
-
-    def get_stock_data(self):
-        """
-        获取股票数据，计算所有策略所需的技术指标
-        """
-        # 这里简化处理，直接复用之前的 baostock 逻辑
-        # 在实际代码中，这里应该包含完整的数据获取和指标计算
-        # 为了节省篇幅，假设数据已经包含：
-        # date, open, high, low, close, volume
-        # MA5, MA10, MA20, MA60
-        # MACD, MACD_signal, MACD_hist
-        # K, D, J
-        # RSI
-        # upper, middle, lower (Bollinger Bands)
-        # ATR
-        
-        # 临时：尝试从缓存读取或重新下载（完整逻辑在之前的版本中，这里做适配）
-        # 为确保策略能跑，我们假设数据已经准备好。
-        # 如果是第一次运行，需确保包含所有指标计算逻辑。
-        
-        # ... (此处省略重复的 baostock 下载代码，重点在策略逻辑) ...
-        # 如果需要完整的数据获取代码，请告诉我，我可以补全。
-        # 这里我们假设外部已经调用了 data_fetcher 或者在此处实现。
-        
-        import baostock as bs
-        
-        # 尝试读取缓存
-        cache_file = os.path.join(self.cache_dir, f"{self.stock_code}_{self.start_date}_{self.end_date}.csv")
-        if os.path.exists(cache_file):
-            self.df = pd.read_csv(cache_file)
-            self.df['date'] = pd.to_datetime(self.df['date'])
-            # 重新计算指标以防万一
-            self._calculate_indicators()
-            return self.df
-
-        # 下载数据
-        lg = bs.login()
-        
-        # 获取名称
-        rs_name = bs.query_stock_basic(code=self.stock_code)
-        if rs_name.error_code == '0':
-            while (rs_name.next()):
-                self.stock_name = rs_name.get_row_data()[1]
-
-        # 获取K线
-        rs = bs.query_history_k_data_plus(
-            self.stock_code,
-            "date,open,high,low,close,preclose,volume,amount,adjustflag,turn,pctChg",
-            start_date=self.start_date, end_date=self.end_date,
-            frequency="d", adjustflag="3"
-        )
-        
-        data_list = []
-        while (rs.next()):
-            data_list.append(rs.get_row_data())
-            
-        bs.logout()
-        
-        if not data_list:
-            return pd.DataFrame()
-            
-        self.df = pd.DataFrame(data_list, columns=rs.fields)
-        self.df = self.df.apply(pd.to_numeric, errors='ignore')
-        self.df['date'] = pd.to_datetime(self.df['date'])
-        
-        self._calculate_indicators()
-        
-        # 保存缓存
-        self.df.to_csv(cache_file, index=False)
-        return self.df
+        self.stock_name = stock_code 
 
     def _calculate_indicators(self):
         """统一计算所有策略需要的技术指标"""
@@ -107,8 +35,7 @@ class BacktestEngine:
         exp26 = df['close'].ewm(span=26, adjust=False).mean()
         df['MACD'] = exp12 - exp26
         df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        df['MACD_hist'] = (df['MACD'] - df['MACD_signal']) * 2
-
+        
         # 3. KDJ
         low_list = df['low'].rolling(window=9, min_periods=9).min()
         high_list = df['high'].rolling(window=9, min_periods=9).max()
@@ -136,80 +63,6 @@ class BacktestEngine:
         df['L-PC'] = abs(df['low'] - df['close'].shift(1))
         df['TR'] = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
         df['ATR'] = df['TR'].rolling(window=14).mean()
-
-    def run_backtest(self, strategy_type='Score_V1'):
-        """运行回测主流程"""
-        if self.df is None:
-            self.get_stock_data()
-            
-        if self.df is None or self.df.empty:
-            return {
-                "total_return": 0,
-                "trades": [],
-                "win_rate": 0,
-                "max_drawdown": 0
-            }
-
-        position = 0
-        balance = 100000
-        initial_balance = 100000
-        trades = []
-        logs = []
-        
-        df_test = self.df.copy()
-        
-        for i in range(1, len(df_test)):
-            row = df_test.iloc[i]
-            prev_row = df_test.iloc[i-1]
-            date = row['date']
-            price = row['close']
-            
-            # 获取策略决策
-            action, reason, score = self.make_decision(row, prev_row, strategy_type)
-            
-            # 执行交易
-            if action == "买入" and position == 0:
-                position = balance / price
-                balance = 0
-                trades.append({
-                    "date": date,
-                    "action": "买入",
-                    "price": price,
-                    "reason": reason,
-                    "score": score
-                })
-                logs.append([date, price, "AI建议买入", "全仓买入", position, position * price, date, strategy_type, self.stock_code])
-                
-            elif action == "卖出" and position > 0:
-                balance = position * price
-                position = 0
-                trades.append({
-                    "date": date,
-                    "action": "卖出",
-                    "price": price,
-                    "reason": reason,
-                    "score": score
-                })
-                logs.append([date, price, "AI建议卖出", "清仓卖出", 0, balance, date, strategy_type, self.stock_code])
-            
-            else:
-                current_asset = balance + position * price
-                logs.append([date, price, "持仓/观望", "无操作", position if position > 0 else 0, current_asset, date, strategy_type, self.stock_code])
-
-        #虽然最后可能持仓，但按当前价格计算总资产
-        final_asset = balance + position * df_test.iloc[-1]['close']
-        total_return = (final_asset - initial_balance) / initial_balance * 100
-        
-        # 保存CSV日志
-        log_df = pd.DataFrame(logs, columns=['日期', '收盘', 'AI建议', '操作', '持仓', '总资产', 'date', '策略', '股票'])
-        log_df['股票名称'] = self.stock_name
-        log_df.to_csv(f"backtest_{strategy_type}_{self.stock_code}.csv", index=False)
-        
-        return {
-            "total_return": total_return,
-            "trades": trades,
-            "final_asset": final_asset
-        }
 
     def make_decision(self, row, prev_row, strategy_type='Score_V1', api_key=None):
         return self._make_decision(row, prev_row, strategy_type, api_key)
@@ -253,26 +106,24 @@ class BacktestEngine:
             score += 15
             reasons.append("MACD金叉增强")
 
-        # 4. 量能 Volume (25分) - 权重提升！
-        # 逻辑：成交量大于5日均量 或 比昨日放量
-        # 简化处理：如果比昨日放量20%以上
+        # 4. 量能 Volume (25分)
         vol_increase = False
         if prev_row is not None and prev_row['volume'] > 0:
-            if row['volume'] > prev_row['volume'] * 1.05: # 稍微放量即可
+            if row['volume'] > prev_row['volume'] * 1.05:
                 vol_increase = True
         
-        if vol_increase and row['close'] > row['open']: # 放量阳线
+        if vol_increase and row['close'] > row['open']: 
             score += 25
             reasons.append("放量上涨资金流入")
         elif vol_increase:
-            score += 15 # 放量但非阳线
+            score += 15 
         
-        # 5. 超买超卖 KDJ (10分) - 权重降低
+        # 5. 超买超卖 KDJ (10分)
         if row['K'] > row['D'] and row['K'] < 80:
             score += 10
             reasons.append("KDJ金叉")
 
-        # 6. 相对强弱 RSI (10分) - 权重降低
+        # 6. 相对强弱 RSI (10分)
         if 50 < row['RSI'] < 80:
             score += 10
             reasons.append("RSI强势区")
@@ -323,7 +174,7 @@ class BacktestEngine:
         # 卖出：突破上轨
         elif price >= upper:
             return "卖出", "触及布林上轨，超买止盈", score
-        # 卖出：跌破中轨 (趋势坏了也得跑)
+        # 卖出：跌破中轨
         elif price < middle and prev_row is not None and prev_row['close'] > prev_row['middle']:
             return "卖出", "有效跌破中轨，反弹结束", score
         else:
@@ -336,8 +187,7 @@ class BacktestEngine:
         """
         构建 Prompt 并尝试调用 LLM API
         """
-        # ... (略去 Prompt 构建) ...
-        # 1. Prompt 构建逻辑太长，我只替换头部和中间的关键调用逻辑
+        # 1. Prompt 构建
         prompt = f"""
 你是一个资深的股票分析师，现在的行情数据是：
 - 股票代码: {self.stock_code}
@@ -384,12 +234,13 @@ class BacktestEngine:
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 100
+                    "max_tokens": 1000
                 }
                 
                 # 发起请求 (设置超时防止卡死)
                 try:
-                    response = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=8)
+                    # 超时已调整为 45 秒
+                    response = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=45)
                     
                     if response.status_code == 200:
                         res_json = response.json()
@@ -406,15 +257,14 @@ class BacktestEngine:
                             action = "观望"
                             score = 50
                             
-                        # 截取理由
-                        reason = content.replace('\n', ' ')[:50] + "..."
+                        reason = content
                     else:
                         action = "API错误"
                         reason = f"HTTP {response.status_code}: {response.text[:50]}"
                         
                 except requests.exceptions.Timeout:
                     action = "超时"
-                    reason = "AI响应超时(>8s)，建议重试"
+                    reason = "AI响应超时(>45s)，建议重试"
                 except Exception as req_err:
                     action = "请求失败"
                     reason = str(req_err)
@@ -429,17 +279,3 @@ class BacktestEngine:
 
         return action, reason, score
 
-# 兼容旧代码的 Run 接口，作为单独脚本运行时
-if __name__ == "__main__":
-    import sys
-    stock_code = "600519"
-    if len(sys.argv) > 1:
-        stock_code = sys.argv[1]
-    
-    engine = BacktestEngine(stock_code, start_date="2025-01-01", end_date="2025-12-31")
-    engine.get_stock_data()
-    
-    # 默认跑 V1
-    print(f"Testing {stock_code} with Score_V1...")
-    result = engine.run_backtest('Score_V1')
-    print(f"Return: {result['total_return']:.2f}%")

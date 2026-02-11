@@ -63,23 +63,88 @@ def get_market_status():
         return "🕙 等待开盘", False
 
 def get_stock_data(symbol):
-    """获取 A 股历史行情数据"""
+    """
+    获取 A 股历史行情数据 + 实时数据拼接
+    """
     import time
-    full_symbol = "sh" + symbol if symbol.startswith('6') else "sz" + symbol
+    import datetime
+    
+    # 1. 识别市场前缀
+    market = "sh" if symbol.startswith('6') else "sz"
+    full_symbol = market + symbol
+    
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            df = ak.stock_zh_a_daily(symbol=full_symbol, adjust="qfq")
-            if df is None or df.empty:
+            # --- A. 获取历史日线数据 ---
+            df_hist = ak.stock_zh_a_daily(symbol=full_symbol, adjust="qfq")
+            
+            if df_hist is None or df_hist.empty:
                 return None, f"获取到的数据为空，可能股票代码 {symbol} 不存在"
-            df = df.rename(columns={'date': '日期', 'open': '开盘', 'high': '最高', 'low': '最低', 'close': '收盘', 'volume': '成交量'})
-            df = df.sort_values('日期')
-            df['涨跌幅'] = df['收盘'].pct_change() * 100
-            df['涨跌幅'] = df['涨跌幅'].fillna(0).round(2)
-            df['日期'] = pd.to_datetime(df['日期']).dt.strftime('%Y-%m-%d')
-            return df.tail(90), None
-        except:
+            
+            # 标准化列名
+            df_hist = df_hist.rename(columns={'date': '日期', 'open': '开盘', 'high': '最高', 'low': '最低', 'close': '收盘', 'volume': '成交量'})
+            df_hist = df_hist.sort_values('日期')
+            
+            # --- B. 获取实时数据 (用于盘中分析) ---
+            # 只有当今天是交易日且历史数据没更新到今天时，才拼接实时数据
+            today_str = datetime.date.today().strftime('%Y-%m-%d')
+            last_date_str = pd.to_datetime(df_hist.iloc[-1]['日期']).strftime('%Y-%m-%d')
+            
+            # 如果历史数据没包含今天，尝试获取实时快照
+            if last_date_str < today_str:
+                try:
+                    # 使用东财实时接口获取个股详情
+                    # 注意：ak.stock_zh_a_spot_em 返回的是全市场数据，量大且慢。
+                    # 优化：改用 stock_zh_a_hist_min (例如拿最近的1分钟K线来模拟当下) 
+                    # 或者：stock_zh_a_spot_em 虽然慢但全。
+                    # 这里为了精准，我们使用 ak.stock_zh_a_daily 这种可能没更新。
+                    # 备选方案：ak.stock_zh_a_tick_tx_js or ak.stock_zh_a_spot_em(特定代码)
+                    
+                    # 简单起见，我们尝试获取只有最近一天的实时日线（通过 limit 无法控制，只能过滤）
+                    # 下面用一个轻量级的实时获取方法：
+                    
+                    df_real = ak.stock_zh_a_spot_em()
+                    # 过滤出当前这只股票
+                    row_real = df_real[df_real['代码'] == symbol]
+                    
+                    if not row_real.empty:
+                        real_data = row_real.iloc[0]
+                        current_price = real_data['最新价']
+                        
+                        # 构建新的一行
+                        new_row = {
+                            '日期': today_str, # 假设是今天
+                            '开盘': real_data['今开'],
+                            '最高': real_data['最高'],
+                            '最低': real_data['最低'],
+                            '收盘': current_price, # 盘中收盘价即当前价
+                            '成交量': real_data['成交量']
+                        }
+                        
+                        # 检查数据有效性 (有些停牌股可能为0)
+                        if new_row['开盘'] > 0 and new_row['收盘'] > 0:
+                            # 拼接到 df_hist
+                            # 使用 pd.concat
+                            df_new = pd.DataFrame([new_row])
+                            df_hist = pd.concat([df_hist, df_new], ignore_index=True)
+                            
+                except Exception as e:
+                    print(f"实时数据获取失败，仅使用历史数据: {e}")
+                    pass # 失败则忽略，只用历史数据
+
+            # --- C. 计算涨跌幅 ---
+            df_hist['涨跌幅'] = df_hist['收盘'].pct_change() * 100
+            df_hist['涨跌幅'] = df_hist['涨跌幅'].fillna(0).round(2)
+            
+            # 格式化日期
+            df_hist['日期'] = pd.to_datetime(df_hist['日期']).dt.strftime('%Y-%m-%d')
+            
+            return df_hist.tail(90), None
+            
+        except Exception as e:
             time.sleep(1)
+            
     return None, "获取数据失败"
 
 def analyze_with_deepseek(symbol, df, cost=None, strategy_type="technical"):

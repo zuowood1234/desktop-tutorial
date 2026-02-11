@@ -168,28 +168,48 @@ class DBManager:
             conn.commit()
 
     # --- 每日建议存储 ---
-    def save_daily_recommendation(self, uid, stock_code, date, tech_res, sent_res, price):
-        """保存每日自动生成的建议"""
+    # --- 每日建议存储 ---
+    def save_daily_recommendation(self, uid, stock_code, date, price, 
+                                  tech_action, tech_reason, 
+                                  sent_action, sent_reason,
+                                  v3_action=None, v3_reason=None,
+                                  v4_action=None, v4_reason=None,
+                                  pct_chg=None):
+        """保存每日自动生成的建议 (支持 V1-V4 全策略 + 涨跌幅)"""
         try:
             with self._get_connection() as conn:
-                # 同样使用 ON CONFLICT 替代 INSERT OR REPLACE
+                # 使用 ON CONFLICT 更新所有字段
                 sql = """
                     INSERT INTO daily_recommendations 
-                    (uid, stock_code, date, tech_action, tech_reason, sent_action, sent_reason, price)
-                    VALUES (:uid, :code, :date, :ta, :tr, :sa, :sr, :price)
+                    (uid, stock_code, date, price, pct_chg,
+                     tech_action, tech_reason, 
+                     sent_action, sent_reason,
+                     v3_action, v3_reason,
+                     v4_action, v4_reason)
+                    VALUES (:uid, :code, :date, :price, :pct,
+                            :ta, :tr, 
+                            :sa, :sr,
+                            :v3a, :v3r,
+                            :v4a, :v4r)
                     ON CONFLICT (uid, stock_code, date)
                     DO UPDATE SET 
+                        price = EXCLUDED.price,
+                        pct_chg = EXCLUDED.pct_chg,
                         tech_action = EXCLUDED.tech_action,
                         tech_reason = EXCLUDED.tech_reason,
                         sent_action = EXCLUDED.sent_action,
                         sent_reason = EXCLUDED.sent_reason,
-                        price = EXCLUDED.price
+                        v3_action = EXCLUDED.v3_action,
+                        v3_reason = EXCLUDED.v3_reason,
+                        v4_action = EXCLUDED.v4_action,
+                        v4_reason = EXCLUDED.v4_reason
                 """
                 conn.execute(text(sql), {
-                    "uid": uid, "code": stock_code, "date": date, 
-                    "ta": tech_res['action'], "tr": tech_res['reason'],
-                    "sa": sent_res['action'], "sr": sent_res['reason'],
-                    "price": price
+                    "uid": uid, "code": stock_code, "date": date, "price": price, "pct": pct_chg,
+                    "ta": tech_action, "tr": tech_reason,
+                    "sa": sent_action, "sr": sent_reason,
+                    "v3a": v3_action, "v3r": v3_reason,
+                    "v4a": v4_action, "v4r": v4_reason
                 })
                 conn.commit()
                 return True
