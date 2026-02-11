@@ -1,28 +1,20 @@
 import pandas as pd
-import akshare as ak
 import os
 import time
 from datetime import datetime, timedelta
-import openai
-from dotenv import load_dotenv
-import json
 import argparse
 import sys
 
-# 加载环境变量
-load_dotenv()
-
-# 初始化 DeepSeek 客户端
-client = openai.OpenAI(
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url="https://openrouter.fans/v1",
-)
+# ==========================================
+# 🚀 V4 引擎：增强趋势策略
+# 集成：MA60 长期过滤 + ATR 动态止损
+# ==========================================
 
 CACHE_DIR = "stock_data_cache"
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
 
-class BacktestEngine:
+class BacktestEngineV4:
     def __init__(self, stock_code, days=30, start_date=None, end_date=None):
         self.symbol = stock_code
         self.days = days
@@ -32,19 +24,18 @@ class BacktestEngine:
         self.stock_name = stock_code # default
 
     def get_stock_data(self):
-        """获取并缓存日线数据 (Switch to Baostock)"""
+        """获取并缓存日线数据 (Baostock)"""
         import baostock as bs
         
         today_str = datetime.now().strftime("%Y%m%d")
         cache_file = os.path.join(CACHE_DIR, f"{self.symbol}_{today_str}.csv")
         
         if os.path.exists(cache_file):
-            # print(f"📦 加载缓存: {cache_file}")
             self.df = pd.read_csv(cache_file)
             if 'stock_name' in self.df.columns:
                  self.stock_name = str(self.df.iloc[0]['stock_name'])
         else:
-            print(f"🌐 下载数据(Baostock): {self.symbol}...")
+            # print(f"🌐 下载数据(Baostock-V4): {self.symbol}...")
             # 1. Login
             lg = bs.login()
             if lg.error_code != '0':
@@ -56,7 +47,19 @@ class BacktestEngine:
             if self.symbol.startswith('688'): bs_code = f"sh.{self.symbol}" 
             if self.symbol.startswith('30'): bs_code = f"sz.{self.symbol}"
             
-            # 3. Query
+            # 3. Get Stock Name
+            try:
+                rs_basic = bs.query_stock_basic(code=bs_code)
+                if rs_basic.error_code == '0':
+                    basic_data = []
+                    while rs_basic.next():
+                        basic_data.append(rs_basic.get_row_data())
+                    if basic_data:
+                        self.stock_name = basic_data[0][2]  # code_name is 3rd field
+            except:
+                pass
+            
+            # 4. Query K-Line Data
             rs = bs.query_history_k_data_plus(
                 bs_code,
                 "date,open,high,low,close,volume,amount,turn,pctChg",
@@ -77,13 +80,12 @@ class BacktestEngine:
                 
             df = pd.DataFrame(data_list, columns=rs.fields)
             
-            # 4. Convert Types
+            # 5. Convert Types
             for col in ['open', 'high', 'low', 'close', 'volume', 'amount', 'turn', 'pctChg']:
                 df[col] = pd.to_numeric(df[col])
             
-            # 5. Rename Columns
+            # 6. Rename Columns
             df.rename(columns={'turn': 'turnover', 'pctChg': '涨跌幅'}, inplace=True)
-            self.stock_name = self.symbol
             df['stock_name'] = self.stock_name
             
             df.to_csv(cache_file, index=False)
@@ -91,97 +93,79 @@ class BacktestEngine:
             bs.logout()
 
         if self.df is None or self.df.empty: return False
-        
-        # 计算指标
+
+        # 计算技术指标
         self.df['MA5'] = self.df['close'].rolling(5).mean()
         self.df['MA10'] = self.df['close'].rolling(10).mean()
         self.df['MA20'] = self.df['close'].rolling(20).mean()
-        self.df['VR'] = self.df['volume'] / self.df['volume'].rolling(5).mean()  # 量比
-        self.df['Bias'] = (self.df['close'] - self.df['MA10']) / self.df['MA10'] # 乖离率(相对MA10)
+        self.df['MA60'] = self.df['close'].rolling(60).mean()  # 新增：季线
+        
+        # 计算 ATR (Average True Range)
+        self.df['H-L'] = self.df['high'] - self.df['low']
+        self.df['H-PC'] = abs(self.df['high'] - self.df['close'].shift(1))
+        self.df['L-PC'] = abs(self.df['low'] - self.df['close'].shift(1))
+        self.df['TR'] = self.df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
+        self.df['ATR'] = self.df['TR'].rolling(window=14).mean()
+        
+        # 清理中间列
+        self.df.drop(['H-L', 'H-PC', 'L-PC', 'TR'], axis=1, inplace=True)
         
         # 处理日期索引
         self.df['date'] = pd.to_datetime(self.df['date'])
         
         return True
 
-    def _get_market_context(self, date_str):
-        """简化的市场环境模拟 (V2: 关注上证)"""
-        # 在真实回测中，这里应该读取上证指数当日涨跌幅
-        return "震荡"
-
-    def _ask_ai_decision(self, row, strategy_type="technical"):
+    def _make_decision(self, row, position_info):
         """
-        核心决策函数 V2 (稳健派)
-        支持【纯规则速算】和【AI深度分析】
+        V4 策略核心逻辑
+        position_info: {'has_position': bool, 'entry_price': float, 'entry_atr': float}
         """
+        price = row['close']
+        ma5 = row['MA5']
+        ma10 = row['MA10']
+        ma60 = row['MA60']
+        atr = row['ATR']
+        
+        # 跳过指标未就绪的前期数据
+        if pd.isna(ma60) or pd.isna(atr):
+            return "观望", "指标计算中"
+        
         # ==========================================
-        # 🛡️ V2 纯技术派：Python 规则引擎 (极速模式)
+        # 卖出/止损逻辑 (持仓时优先判断)
         # ==========================================
-        if strategy_type == "technical":
-            price = row['close']
-            ma5 = row['MA5']
-            ma10 = row['MA10']
-            ma20 = row['MA20']
+        if position_info['has_position']:
+            entry_price = position_info['entry_price']
+            entry_atr = position_info['entry_atr']
             
-            # 策略逻辑：MA10 防守战法 (V2核心)
-            # 买入：收盘价 > MA5 且 MA5 > MA20 (趋势确认)
-            if price > ma5 and ma5 > ma20:
-                return "买入", f"股价({price:.2f})站上MA5且MA5>MA20，趋势向好。"
+            # 动态止损：跌破 (买入价 - 2×ATR)
+            stop_loss_price = entry_price - (2 * entry_atr)
             
-            # 卖出：收盘价跌破 MA10 (生命线)
-            elif price < ma10:
-                return "卖出", f"股价({price:.2f})跌破MA10({ma10:.2f})生命线，止损离场。"
+            # 条件1：触发 ATR 止损
+            if price < stop_loss_price:
+                return "卖出", f"触发ATR止损({stop_loss_price:.2f})"
             
-            # 持有：在 MA5 和 MA10 之间，或者 MA5 < MA20 但未破位
-            else:
-                return "持有" if price > ma10 else "观望", f"股价在安全区({ma10:.2f}之上)震荡。"
-
+            # 条件2：跌破 MA10 生命线
+            if price < ma10:
+                return "卖出", f"跌破MA10生命线({ma10:.2f})"
+            
+            # 否则持有
+            return "持有", f"持仓中，止损位{stop_loss_price:.2f}"
+        
         # ==========================================
-        # 🧠 V2 情绪增强派：AI 深度分析
+        # 买入逻辑 (空仓时)
         # ==========================================
-        prompt = f"""
-        你是一个稳健的波段交易员 (V2策略)。
-        当前股票：{self.stock_name} ({self.symbol})
-        日期：{row['date'].strftime('%Y-%m-%d')}
-        
-        【技术数据】
-        - 收盘价: {row['close']:.2f}
-        - MA5: {row['MA5']:.2f}
-        - MA10: {row['MA10']:.2f} (V2生命线)
-        - MA20: {row['MA20']:.2f}
-        - 成交量: {row['volume'] / 10000:.0f} 万手
-        - 量比 (VR): {row['VR']:.2f}
-        
-        策略规则：
-        1. 核心是用 MA10 作为生命线。跌破 MA10 坚决卖出。
-        2. 买入必须要求趋势确认 (MA5 > MA20) 且有成交量配合。
-        3. 如果是缩量上涨，或是大盘不好，请保持谨慎（"观望"）。
-        
-        请给出决策（买入/卖出/持有/观望）和理由。
-        格式：决策|理由
-        """
-        
-        for attempt in range(3):
-            try:
-                response = client.chat.completions.create(
-                    model="deepseek/deepseek-chat",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0,
-                    max_tokens=100
-                )
-                content = response.choices[0].message.content.strip()
-                if "|" in content:
-                    choice, reason = content.split("|", 1)
-                    return choice.strip(), reason.strip()
-                return "观望", content
-            except Exception as e:
-                print(f"⚠️ AI 连接失败 ({attempt+1}/3): {e}")
-                time.sleep(2)
-        
-        sys.exit(1)
+        else:
+            # 方案A：MA60 长期趋势过滤
+            if price < ma60:
+                return "观望", f"股价({price:.2f})低于季线MA60({ma60:.2f})，趋势不明"
+            
+            # 核心买入条件
+            if price > ma5 and ma5 > ma10:
+                return "买入", f"股价站上MA5且趋势向上，季线支撑良好"
+            
+            return "观望", f"等待MA5金叉MA10信号"
 
     def run_backtest(self):
-        """执行回测"""
         if self.df is None and not self.get_stock_data():
             return None
 
@@ -190,31 +174,37 @@ class BacktestEngine:
             start_dt = pd.to_datetime(self.start_date_str)
             end_dt = pd.to_datetime(self.end_date_str)
             mask = (self.df['date'] >= start_dt) & (self.df['date'] <= end_dt)
-            test_df = self.df.loc[mask].copy()
-            if test_df.empty:
-                print("❌ 指定时间段无数据")
-                return None
+            test_data = self.df.loc[mask].copy()
         else:
-            # 默认最近 N 天
-            test_df = self.df.iloc[-self.days:].copy()
+            end_dt = pd.to_datetime(datetime.now())
+            start_dt = end_dt - timedelta(days=self.days)
+            mask = (self.df['date'] >= start_dt) & (self.df['date'] <= end_dt)
+            test_data = self.df.loc[mask].copy()
 
-        test_data = test_df.reset_index(drop=True)
-        history = []
-        
-        # 初始资金
+        if test_data.empty:
+            return []
+
+        # 初始化账户
         cash = 100000
         position = 0
-        initial_asset = 100000
+        history = []
         
-        print(f"🧠 开始逐日回测 ({len(test_data)} 天)...")
+        # 持仓信息
+        position_info = {
+            'has_position': False,
+            'entry_price': 0,
+            'entry_atr': 0
+        }
+        
+        # print(f"🧠 开始逐日回测 ({len(test_data)} 天)...")
         
         for i, row in test_data.iterrows():
             date_str = row['date'].strftime('%Y-%m-%d')
             price = row['close']
             
-            # AI 决策 (V2: 稳健派 -> Python规则)
-            action, reason = self._ask_ai_decision(row, strategy_type="technical")
-            print(f"📅 {date_str} [{action}] Close:{price} | Reason:{reason[:20]}...")
+            # 决策
+            action, reason = self._make_decision(row, position_info)
+            # print(f"📅 {date_str} [{action}] Close:{price} | {reason[:30]}...")
             
             # 执行模拟
             executed = "无"
@@ -223,15 +213,27 @@ class BacktestEngine:
                 if position > 0:
                     cash -= position * price
                     executed = "全仓买入"
+                    # 记录买入信息
+                    position_info['has_position'] = True
+                    position_info['entry_price'] = price
+                    position_info['entry_atr'] = row['ATR']
+                    
             elif action == "卖出" and position > 0:
                 cash += position * price
                 position = 0
                 executed = "清仓卖出"
+                # 清除持仓信息
+                position_info['has_position'] = False
+                position_info['entry_price'] = 0
+                position_info['entry_atr'] = 0
             
             # 结算
             current_asset = cash + (position * price)
             
             history.append({
+                "股票代码": self.symbol,
+                "股票名称": self.stock_name,
+                "策略类型": "V4 (增强趋势)",
                 "日期": date_str,
                 "收盘": price,
                 "AI建议": action,
@@ -243,7 +245,7 @@ class BacktestEngine:
         return history
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='AI Backtest Engine V2 (Sentiment Enhanced)')
+    parser = argparse.ArgumentParser(description='AI Backtest Engine V4 (Enhanced Trend)')
     parser.add_argument('stock_code', type=str, help='Stock Code')
     parser.add_argument('--days', type=int, default=30, help='Days')
     parser.add_argument('--start', type=str, help='Start Date YYYY-MM-DD')
@@ -256,15 +258,14 @@ if __name__ == "__main__":
     end_str = args.end
     
     if not start_str and not end_str:
-        # 如果没传，就用默认天数倒推
         end_dt = datetime.now()
         start_dt = end_dt - timedelta(days=args.days)
         start_str = start_dt.strftime("%Y-%m-%d")
         end_str = end_dt.strftime("%Y-%m-%d")
     
-    print(f"\n🚀 [V2] 回测范围: {start_str} 至 {end_str}")
+    # print(f"\n🚀 [V4] 回测范围: {start_str} 至 {end_str}")
 
-    engine = BacktestEngine(
+    engine = BacktestEngineV4(
         args.stock_code, 
         start_date=start_str, 
         end_date=end_str
@@ -273,16 +274,6 @@ if __name__ == "__main__":
     
     if result:
         df = pd.DataFrame(result)
-        initial = 100000
-        final = df.iloc[-1]['总资产']
-        roi = (final - initial) / initial * 100
-        
-        print("\n" + "="*40)
-        print(f"💰 V2 回测结果 ({args.stock_code})")
-        print(f"最终资产: {final:.2f}")
-        print(f"收益率: {roi:.2f}%")
-        print("="*40)
-        
-        filename = f"backtest_v2_{args.stock_code}.csv"
+        filename = f"backtest_v4_{args.stock_code}.csv"
         df.to_csv(filename, index=False, encoding='utf-8-sig')
-        print(f"✅ 结果已保存: {filename}")
+        # print(f"✅ V4 结果已保存: {filename}")
