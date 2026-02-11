@@ -342,6 +342,9 @@ class BacktestEngine:
 你是一个资深的股票分析师，现在的行情数据是：
 - 股票代码: {self.stock_code}
 - 日期: {row['date']}
+- 开盘价: {row['open']:.2f}
+- 最高价: {row['high']:.2f}
+- 最低价: {row['low']:.2f}
 - 收盘价: {row['close']:.2f}
 - 涨跌幅: {((row['close'] - prev_row['close'])/prev_row['close']*100) if prev_row is not None else 0:.2f}%
 - MA5: {row['MA5']:.2f}
