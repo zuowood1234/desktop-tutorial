@@ -105,6 +105,18 @@ class DBManager:
         with self._get_connection() as conn:
             return pd.read_sql_query('SELECT uid, username, email, role, status, can_backtest, total_tokens, created_at FROM users', conn)
 
+    def get_user_info(self, uid):
+        """根据 uid 获取单个用户信息字典"""
+        with self._get_connection() as conn:
+            result = conn.execute(
+                text('SELECT uid, username, email, role, status, can_backtest, total_tokens FROM users WHERE uid = :id'), 
+                {"id": uid}
+            )
+            user = result.fetchone()
+            if user:
+                return dict(user._mapping)
+            return None
+
     def update_user_status(self, uid, new_status):
         """管理员特权：禁用/启用用户"""
         with self._get_connection() as conn:
@@ -233,6 +245,12 @@ class DBManager:
         with self._get_connection() as conn:
             query = "SELECT * FROM daily_recommendations WHERE uid = %(uid)s AND date = %(date)s"
             return pd.read_sql_query(query, conn, params={"uid": uid, "date": date})
+
+    def check_if_daily_analysis_run(self, date):
+        """检查指定日期是否已经生成过全站每日建议"""
+        with self._get_connection() as conn:
+            result = conn.execute(text('SELECT 1 FROM daily_recommendations WHERE date = :d LIMIT 1'), {"d": date})
+            return result.fetchone() is not None
             
     def log_token_usage(self, uid, action_type, stock_code, prompt, completion):
         """记录并累加用户的 token 消耗"""
