@@ -106,6 +106,16 @@ with col_main:
                 if buy_vol_ratio:
                     buy_vol_ratio_val = st.slider("5日量比大于", 1.0, 10.0, 2.0, 0.5)
 
+                buy_limit_up_count = st.checkbox("🚩 资金拉板做活(连板基因)", value=False)
+                if buy_limit_up_count:
+                    limit_up_period = st.radio("拉板统计周期", ["5日内", "10日内"], horizontal=True)
+                    limit_up_min = st.slider("至少包含涨停次数", 1, 5, 2, 1)
+                    
+                buy_seal_ratio = st.checkbox("🚩 封单动能强度(推演)", value=False)
+                if buy_seal_ratio:
+                    st.caption("提示: 1.0为普通涨停，5.0为极端无量一字板")
+                    seal_ratio_min = st.slider("虚拟封成估值不低于", 0.0, 5.0, 1.0, 0.5)
+
         with buy_tabs[2]: # 基本面
             bc5, bc6 = st.columns(2)
             with bc5:
@@ -207,7 +217,7 @@ with col_main:
                         - 均线与乖离: MA_5 到 MA_250, BIAS_6, BIAS_12, BIAS_20, BIAS_60
                         - MACD: MACD, MACD_Signal, MACD_Hist, MACD_Golden_Cross (预先算好的Boolean), MACD_Dead_Cross
                         - 通道震荡: RSI_14, KDJ_K, KDJ_D, KDJ_J, BOLL_Upper, BOLL_Mid, BOLL_Lower
-                        - 波动与异动: ATR_14, ATR_Ratio, Turnover_ZScore (今日换手偏离度), Vol_Ratio_5D (5日量比), Vol_Shrink_20D (是否极度缩量地量Boolean), Limit_Up_Count_5 (近5天涨停次数)
+                        - 波动与异动: ATR_14, ATR_Ratio, Turnover_ZScore (今日换手偏离度), Vol_Ratio_5D (5日量比), Vol_Shrink_20D (是否极度缩量地量Boolean), Limit_Up_Count_5 (近5天涨停次数), Limit_Up_Count_10 (近10天涨停次数), Limit_Down_Count_5 (近5天跌停次数), Limit_Up_Seal_Ratio (封单成交比估测值)
                         - 基本面护城河: PE_TTM, PB, PE_Percentile_3Y (近3年市盈率分位百分比0~100)
                         - 财报动能: ROE, NetProfit_YOY (净利润同比%), DeductedNetProfit_YOY (扣非净利润同比%), Revenue_YOY (营收同比%), Debt_Ratio (资产负债率)
                         - 长期动量: Price_Loc_250 (股价历史250天的振幅位置 0~1)
@@ -267,7 +277,11 @@ with col_main:
         if buy_turnover: buy_conditions.append(f"(Turnover_ZScore > {buy_turn_z})")
         if buy_vol_ratio: buy_conditions.append(f"(Vol_Ratio_5D > {buy_vol_ratio_val})")
         if buy_vol_shrink: buy_conditions.append("(Vol_Shrink_20D == True)")
-        if buy_limit_down: buy_conditions.append("(Limit_Up_Count_5 == 0)")
+        if buy_limit_down: buy_conditions.append("(Limit_Down_Count_5 == 0)")
+        if buy_limit_up_count: 
+            col_lk = "Limit_Up_Count_5" if limit_up_period == "5日内" else "Limit_Up_Count_10"
+            buy_conditions.append(f"({col_lk} >= {limit_up_min})")
+        if buy_seal_ratio: buy_conditions.append(f"(Limit_Up_Seal_Ratio >= {seal_ratio_min})")
         if buy_roe: buy_conditions.append(f"(ROE > {buy_roe_val})")
         if buy_mv: buy_conditions.append(f"(Total_MV >= {buy_mv_val[0] * 100000000} and Total_MV <= {buy_mv_val[1] * 100000000})") # 转换为元
         if buy_pe: buy_conditions.append(f"(PE_Percentile_3Y < {buy_pe_val})")

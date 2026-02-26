@@ -105,9 +105,22 @@ def calculate_super_features(df):
     # 地量标志：今天的量不到过去20天均量的一半
     enriched_valid_df['Vol_Shrink_20D'] = (volume_series_p < (ma_volume_20 * 0.5))
 
-    # 连板基因挖掘: 近 5 日涨停次数
+    # 连板基因挖掘: 近 5 日与 10 日涨停次数
     is_limit_up = (enriched_valid_df['Close_Raw'] >= enriched_valid_df['limit_up'])
     enriched_valid_df['Limit_Up_Count_5'] = is_limit_up.rolling(window=5, min_periods=1).sum()
+    enriched_valid_df['Limit_Up_Count_10'] = is_limit_up.rolling(window=10, min_periods=1).sum()
+    
+    # 防止接飞刀：近 5 日跌停次数
+    is_limit_down = (enriched_valid_df['Close_Raw'] <= enriched_valid_df['limit_down'])
+    enriched_valid_df['Limit_Down_Count_5'] = is_limit_down.rolling(window=5, min_periods=1).sum()
+    
+    # [模拟因子] 封单成交比估算 (Limit_Up_Seal_Ratio)
+    # 真实封成比需要 Level 2 快照数据。此处通过日线特征进行粗略估算：
+    # 如果是无量一字板（全天最低价等于最高价且涨停），封成比极高（赋予虚拟值 5.0 代表 500%）
+    # 如果是普通涨停，赋予基础强度 1.0；未涨停为 0
+    is_one_line_board = (enriched_valid_df['Low_Raw'] == enriched_valid_df['High_Raw']) & is_limit_up
+    limit_seal_proxy = np.where(is_one_line_board, 5.0, np.where(is_limit_up, 1.0, 0.0))
+    enriched_valid_df['Limit_Up_Seal_Ratio'] = limit_seal_proxy
 
     # 把洗好的矩阵重新合并回大表
     final_df = pd.merge(df, enriched_valid_df.drop(columns=[col for col in df.columns if col != 'Date']), on='Date', how='left')

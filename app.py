@@ -122,14 +122,29 @@ if st.session_state.user_role == 'admin':
         st.error("👑 **管理后台**\n\n管理员专属，查看用户数据、一键触发跑批。")
         if st.button("进入管理后台", use_container_width=True):
             st.switch_page("pages/9_👑_管理后台.py")
-            
+
+if st.session_state.user_role == 'admin' or st.session_state.get('can_backtest'):
     with col6:
         st.info("🔬 **专业回测舱**\n\n开启第二轨代码引擎，验证一切量化假说。")
         if st.button("进入专业回测", use_container_width=True):
             st.switch_page("pages/10_🔬_专业回测舱.py")
 
 st.markdown("---")
-st.info("🚧 更多功能 (如 策略回测、今日大盘指数、市场分析) 敬请期待！系统架构已升级完毕，即将提速开发。")
+col7, col8, col9 = st.columns(3)
+
+with col7:
+    st.success("🎯 **雷达选股器**\n\n全市场秒级扫描，找出符合形态和基本面逻辑的个股。")
+    if st.button("进入雷达选股", use_container_width=True):
+        st.switch_page("pages/5_🎯_雷达选股器.py")
+
+if st.session_state.user_role == 'admin' or st.session_state.get('can_backtest'):
+    with col8:
+        st.success("🌐 **策略全景阅兵场**\n\n批量测试策略在全市场的实际表现。")
+        if st.button("进入全景阅兵场", use_container_width=True):
+            st.switch_page("pages/11_🌐_策略全景阅兵场.py")
+
+st.markdown("---")
+st.info("🚧 更多功能 (如今日大盘指数、深度市场分析) 敬请期待！系统架构已升级完毕，即将提速开发。")
 
 # ==================== 🚀 自动化引擎：盘后自动检查 ====================
 # 由于 Streamlit 的逐行渲染特性，必须将其放在最后，防止阻塞页面渲染
