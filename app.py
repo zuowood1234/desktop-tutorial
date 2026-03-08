@@ -137,8 +137,13 @@ with col7:
     if st.button("进入雷达选股", use_container_width=True):
         st.switch_page("pages/5_🎯_雷达选股器.py")
 
+with col8:
+    st.info("📓 **交易笔记**\n\n记录复盘感悟，沉淀交易体系和灵感。")
+    if st.button("进入交易笔记", use_container_width=True):
+        st.switch_page("pages/6_📓_交易笔记.py")
+
 if st.session_state.user_role == 'admin' or st.session_state.get('can_backtest'):
-    with col8:
+    with col9:
         st.success("🌐 **策略全景阅兵场**\n\n批量测试策略在全市场的实际表现。")
         if st.button("进入全景阅兵场", use_container_width=True):
             st.switch_page("pages/11_🌐_策略全景阅兵场.py")

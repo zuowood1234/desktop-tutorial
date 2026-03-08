@@ -13,6 +13,8 @@ load_dotenv(dotenv_path=env_path, override=True)
 @st.cache_resource
 def get_db():
     # Force cache invalidation to load new DBManager methods V2
+    # clearing the cache below to make sure DBManager is reloaded
+    st.cache_resource.clear()
     return DBManager()
 
 @st.cache_data(ttl=3600*24) # 股票名称缓存 24小时

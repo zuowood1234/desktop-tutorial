@@ -276,3 +276,113 @@ class DBManager:
         except Exception as e:
             print(f"Token 日志失败: {e}")
             return False
+
+    # --- 交易笔记管理 ---
+    def add_trading_note(self, uid, content, tags, is_public, date_str):
+        """发布日内或盘后交易笔记"""
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    text('''
+                        INSERT INTO trading_notes (uid, content, tags, is_public, date_str)
+                        VALUES (:uid, :content, :tags, :is_public, :date_str)
+                    '''),
+                    {"uid": uid, "content": content, "tags": tags, "is_public": is_public, "date_str": date_str}
+                )
+                conn.commit()
+                return True, "笔记发布成功"
+        except Exception as e:
+            print(f"发布笔记失败: {e}")
+            return False, f"发布笔记失败: {e}"
+
+    def get_trading_notes(self, uid=None, date_str=None, is_public=None):
+        """获取交易笔记列表"""
+        with self._get_connection() as conn:
+            query = """
+                SELECT n.id, n.uid, n.content, n.tags, n.is_public, n.date_str, n.created_at, u.username
+                FROM trading_notes n
+                LEFT JOIN users u ON n.uid = u.uid
+                WHERE 1=1
+            """
+            params = {}
+            if uid is not None:
+                query += " AND n.uid = %(uid)s"
+                params["uid"] = uid
+            if date_str is not None:
+                query += " AND n.date_str = %(date_str)s"
+                params["date_str"] = date_str
+            if is_public is not None:
+                query += " AND n.is_public = %(is_public)s"
+                params["is_public"] = is_public
+                
+            query += " ORDER BY n.created_at DESC"
+            return pd.read_sql_query(query, conn, params=params)
+
+    def delete_trading_note(self, note_id, uid):
+        """删除自己的交易笔记"""
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    text('DELETE FROM trading_notes WHERE id = :id AND uid = :uid'),
+                    {"id": note_id, "uid": uid}
+                )
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"删除笔记失败: {e}")
+            return False
+            
+    def get_notes_heatmap_data(self, uid):
+        """获取热力图数据，返回包含 date 和 count 的 DataFrame"""
+        with self._get_connection() as conn:
+            query = """
+                SELECT date_str as date, count(*) as count 
+                FROM trading_notes 
+                WHERE uid = %(uid)s 
+                GROUP BY date_str
+            """
+            return pd.read_sql_query(query, conn, params={"uid": uid})
+
+    # --- 笔记评论管理 ---
+    def add_note_comment(self, note_id, uid, content):
+        """发布笔记评论"""
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    text('''
+                        INSERT INTO note_comments (note_id, uid, content)
+                        VALUES (:note_id, :uid, :content)
+                    '''),
+                    {"note_id": note_id, "uid": uid, "content": content}
+                )
+                conn.commit()
+                return True, "评论发布成功"
+        except Exception as e:
+            print(f"发布评论失败: {e}")
+            return False, f"发布评论失败: {e}"
+
+    def get_note_comments(self, note_id):
+        """获取笔记的所有评论"""
+        with self._get_connection() as conn:
+            query = """
+                SELECT c.id, c.note_id, c.uid, c.content, c.created_at, u.username
+                FROM note_comments c
+                LEFT JOIN users u ON c.uid = u.uid
+                WHERE c.note_id = %(note_id)s
+                ORDER BY c.created_at ASC
+            """
+            return pd.read_sql_query(query, conn, params={"note_id": note_id})
+
+    def delete_note_comment(self, comment_id, uid):
+        """删除评论 (只能删除自己的)"""
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    text('DELETE FROM note_comments WHERE id = :id AND uid = :uid'),
+                    {"id": comment_id, "uid": uid}
+                )
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"删除评论失败: {e}")
+            return False
