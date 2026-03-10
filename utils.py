@@ -137,7 +137,7 @@ def check_authentication():
     if 'user_id' not in st.session_state or st.session_state.user_id is None:
         st.warning("⚠️ 请先在首页进行登录操作。")
         if st.button("👉 点击此处返回首页登录"):
-            st.switch_page("0_🔐_登录页面.py")
+            st.switch_page("app.py")
         st.stop()
 
 def render_sidebar():
