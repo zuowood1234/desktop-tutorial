@@ -312,8 +312,10 @@ class DBManager:
                 query += " AND n.date_str = %(date_str)s"
                 params["date_str"] = date_str
             if is_public is not None:
-                query += " AND n.is_public = %(is_public)s"
-                params["is_public"] = is_public
+                if is_public:
+                    query += " AND n.is_public = true"
+                else:
+                    query += " AND n.is_public = false"
                 
             query += " ORDER BY n.created_at DESC"
             return pd.read_sql_query(query, conn, params=params)
