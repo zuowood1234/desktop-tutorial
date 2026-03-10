@@ -41,6 +41,7 @@ class DBManager:
                 "keepalives_count": 5     # 重试次数
             }
         )
+        self.create_calendar_events_table()
         
     def _get_connection(self):
         """获取数据库连接（带自动重试）"""
@@ -387,4 +388,69 @@ class DBManager:
                 return True
         except Exception as e:
             print(f"删除评论失败: {e}")
+            return False
+
+    # --- 日历事件管理 ---
+    def create_calendar_events_table(self):
+        """自动建表（如不存在）"""
+        try:
+            with self._get_connection() as conn:
+                conn.execute(text('''
+                    CREATE TABLE IF NOT EXISTS calendar_events (
+                        id SERIAL PRIMARY KEY,
+                        uid INTEGER REFERENCES users(uid) ON DELETE CASCADE,
+                        title VARCHAR(100) NOT NULL,
+                        start_date VARCHAR(10) NOT NULL,
+                        end_date VARCHAR(10) NOT NULL,
+                        color VARCHAR(20) DEFAULT 'blue',
+                        is_public BOOLEAN DEFAULT false,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                '''))
+                conn.commit()
+        except Exception as e:
+            print(f"建表 calendar_events 失败: {e}")
+
+    def add_calendar_event(self, uid, title, start_date, end_date, color, is_public):
+        """添加日历事件"""
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    text('''
+                        INSERT INTO calendar_events (uid, title, start_date, end_date, color, is_public)
+                        VALUES (:uid, :title, :start_date, :end_date, :color, :is_public)
+                    '''),
+                    {"uid": uid, "title": title, "start_date": start_date,
+                     "end_date": end_date, "color": color, "is_public": is_public}
+                )
+                conn.commit()
+                return True, "事件添加成功"
+        except Exception as e:
+            print(f"添加事件失败: {e}")
+            return False, f"添加事件失败: {e}"
+
+    def get_calendar_events(self, uid):
+        """获取当前用户的私有事件 + 所有公开事件"""
+        with self._get_connection() as conn:
+            query = """
+                SELECT e.id, e.uid, e.title, e.start_date, e.end_date, e.color, e.is_public, u.username
+                FROM calendar_events e
+                LEFT JOIN users u ON e.uid = u.uid
+                WHERE e.uid = %(uid)s OR e.is_public = true
+                ORDER BY e.start_date ASC
+            """
+            return pd.read_sql_query(query, conn, params={"uid": uid})
+
+    def delete_calendar_event(self, event_id, uid):
+        """删除自己的日历事件"""
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    text('DELETE FROM calendar_events WHERE id = :id AND uid = :uid'),
+                    {"id": event_id, "uid": uid}
+                )
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"删除事件失败: {e}")
             return False
