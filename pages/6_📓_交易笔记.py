@@ -43,7 +43,8 @@ if 'show_month_picker' not in st.session_state:
     st.session_state.show_month_picker = False
 
 # ====== 数据加载 ======
-heatmap_df = db.get_notes_heatmap_data(uid)
+# 日历热力图：显示自己所有笔记 + 他人公开笔记的计数
+heatmap_df = db.get_all_visible_notes_heatmap(uid)
 note_counts = {}
 if not heatmap_df.empty:
     for _, row in heatmap_df.iterrows():
@@ -207,7 +208,8 @@ st.markdown("---")
 if st.session_state.note_selected_date:
     sel_date = st.session_state.note_selected_date
     date_events = event_map.get(sel_date, [])
-    date_notes_df = db.get_trading_notes(uid=uid, date_str=sel_date)
+    # 加载自己的笔记 + 他人公开的笔记
+    date_notes_df = db.get_notes_for_date_visible(uid, sel_date)
 
     cols_mid = st.columns([1, 9])
     with cols_mid[0]:
@@ -236,11 +238,20 @@ if st.session_state.note_selected_date:
 
     if not date_notes_df.empty:
         for _, row in date_notes_df.iterrows():
-            with st.container(border=True):
+            is_own = (row['uid'] == uid)
+            # 自己的笔记：普通白色边框；他人公开笔记：蓝色调背景
+            border_style = "border: 1px solid #e0e0e0;" if is_own else "border: 1px solid #93C5FD; background: #EFF6FF;"
+            with st.container():
+                st.markdown(f"<div style='border-radius:10px; padding:12px 16px; margin-bottom:10px; {border_style}'>", unsafe_allow_html=True)
                 h1, h2, h3 = st.columns([6, 3, 1])
                 with h1:
                     privacy_icon = "🌍 公开" if row['is_public'] else "🔒 私密"
-                    st.caption(f"**{row['username']}** · {row['created_at'].strftime('%H:%M')} · {privacy_icon}")
+                    other_label = "" if is_own else " · <span style='color:#1D4ED8;font-weight:600;'>他人笔记</span>"
+                    st.markdown(
+                        f"<div style='font-size:13px;color:#555;'><b>{row['username']}</b> · "
+                        f"{row['created_at'].strftime('%H:%M')} · {privacy_icon}{other_label}</div>",
+                        unsafe_allow_html=True
+                    )
                 with h2:
                     if row['tags']:
                         try:
@@ -255,7 +266,7 @@ if st.session_state.note_selected_date:
                         except:
                             pass
                 with h3:
-                    if row['uid'] == uid:
+                    if is_own:
                         if st.button("🗑️", key=f"sel_del_{row['id']}", help="删除该笔记"):
                             if db.delete_trading_note(row['id'], uid):
                                 st.rerun()
@@ -263,8 +274,11 @@ if st.session_state.note_selected_date:
                     f"<div style='font-size:15px;line-height:1.6;padding:8px 0;'>{row['content']}</div>",
                     unsafe_allow_html=True
                 )
+                st.markdown("</div>", unsafe_allow_html=True)
+
     else:
         st.caption("该日暂无笔记")
+
 
     st.markdown("---")
 

@@ -346,6 +346,30 @@ class DBManager:
             """
             return pd.read_sql_query(query, conn, params={"uid": uid})
 
+    def get_all_visible_notes_heatmap(self, uid):
+        """获取所有可见笔记（自己的全部 + 他人公开）的热力图数据"""
+        with self._get_connection() as conn:
+            query = """
+                SELECT date_str as date, count(*) as count
+                FROM trading_notes
+                WHERE uid = %(uid)s OR is_public = true
+                GROUP BY date_str
+            """
+            return pd.read_sql_query(query, conn, params={"uid": uid})
+
+    def get_notes_for_date_visible(self, uid, date_str):
+        """获取某日期所有可见笔记（自己的 + 他人公开）"""
+        with self._get_connection() as conn:
+            query = """
+                SELECT n.id, n.uid, n.content, n.tags, n.is_public, n.date_str, n.created_at, u.username
+                FROM trading_notes n
+                LEFT JOIN users u ON n.uid = u.uid
+                WHERE n.date_str = %(date_str)s
+                  AND (n.uid = %(uid)s OR n.is_public = true)
+                ORDER BY n.created_at DESC
+            """
+            return pd.read_sql_query(query, conn, params={"uid": uid, "date_str": date_str})
+
     # --- 笔记评论管理 ---
     def add_note_comment(self, note_id, uid, content):
         """发布笔记评论"""
