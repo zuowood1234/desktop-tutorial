@@ -274,7 +274,57 @@ if st.session_state.note_selected_date:
                     f"<div style='font-size:15px;line-height:1.6;padding:8px 0;'>{row['content']}</div>",
                     unsafe_allow_html=True
                 )
+
+                # 评论区（公开笔记才有评论）
+                if row['is_public']:
+                    comments_df = db.get_note_comments(row['id'])
+                    comment_count = len(comments_df) if not comments_df.empty else 0
+
+                    with st.expander(f"💬 评论 ({comment_count})", expanded=(comment_count > 0)):
+                        if not comments_df.empty:
+                            for _, c_row in comments_df.iterrows():
+                                c_author = c_row['username'] if c_row['username'] else "未知用户"
+                                col_c1, col_c2 = st.columns([9, 1])
+                                with col_c1:
+                                    st.markdown(
+                                        f"<div style='font-size:13px;color:#666;'>"
+                                        f"<b>{c_author}</b> · {c_row['created_at'].strftime('%m-%d %H:%M')}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                    st.markdown(
+                                        f"<div style='background:#f8f9fa;padding:8px 12px;border-radius:8px;"
+                                        f"margin-bottom:8px;font-size:14px;color:#333;'>{c_row['content']}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                with col_c2:
+                                    if c_row['uid'] == uid:
+                                        if st.button("🗑️", key=f"dc_del_{c_row['id']}", help="删除评论"):
+                                            if db.delete_note_comment(c_row['id'], uid):
+                                                st.rerun()
+                        else:
+                            st.caption("暂无评论")
+
+                        # 发评论
+                        col_in1, col_in2 = st.columns([5, 1])
+                        with col_in1:
+                            new_comment = st.text_input(
+                                "写下你的想法...",
+                                key=f"dc_comment_input_{row['id']}",
+                                label_visibility="collapsed"
+                            )
+                        with col_in2:
+                            if st.button("发送", key=f"dc_comment_btn_{row['id']}", use_container_width=True):
+                                if new_comment.strip():
+                                    ok, msg = db.add_note_comment(row['id'], uid, new_comment)
+                                    if ok:
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                                else:
+                                    st.warning("内容不能为空")
+
                 st.markdown("</div>", unsafe_allow_html=True)
+
 
     else:
         st.caption("该日暂无笔记")
