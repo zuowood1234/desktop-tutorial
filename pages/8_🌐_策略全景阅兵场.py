@@ -49,7 +49,7 @@ with col_param2:
 st.markdown("---")
 st.markdown("### 2.5 历史时间过滤网 (Time Window)")
 col_time1, col_time2 = st.columns(2)
-start_date = col_time1.date_input("首战起算日期 (Start Date)", value=datetime.date(2005, 1, 1), min_value=datetime.date(1990, 1, 1), max_value=datetime.date.today())
+start_date = col_time1.date_input("首战起算日期 (Start Date)", value=datetime.date(2007, 1, 1), min_value=datetime.date(1990, 1, 1), max_value=datetime.date.today())
 end_date = col_time2.date_input("终战截止日期 (End Date)", value=datetime.date.today(), min_value=datetime.date(1990, 1, 1), max_value=datetime.date.today())
 
 st.markdown("---")

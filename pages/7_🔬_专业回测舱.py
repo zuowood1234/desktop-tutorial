@@ -29,7 +29,7 @@ with col_sidebar:
     
     st.markdown("---")
     st.markdown("### 1.5 回测时间窗口")
-    start_date = st.date_input("起算日期 (Start Date)", value=datetime.date(2005, 1, 1), min_value=datetime.date(1990, 1, 1), max_value=datetime.date.today())
+    start_date = st.date_input("起算日期 (Start Date)", value=datetime.date(2007, 1, 1), min_value=datetime.date(1990, 1, 1), max_value=datetime.date.today())
     end_date = st.date_input("截止日期 (End Date)", value=datetime.date.today(), min_value=datetime.date(1990, 1, 1), max_value=datetime.date.today())
     
     st.markdown("---")
@@ -380,7 +380,7 @@ with col_main:
         
         st.markdown("---")
         # 收益明细图表
-        st.subheader(f"{bk_stock_code} 资金时序追踪 (2005 - 至今)")
+        st.subheader(f"{bk_stock_code} 资金时序追踪 (2007 - 至今)")
         
         # 计算持仓状态用于背景涂色
         fig = go.Figure()

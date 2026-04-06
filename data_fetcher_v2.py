@@ -15,7 +15,7 @@ BUFFER_DIR = os.path.join(DATA_DIR, "buffer")
 os.makedirs(VAULT_DIR, exist_ok=True)
 os.makedirs(BUFFER_DIR, exist_ok=True)
 
-def get_trading_calendar(start_date="20050101"):
+def get_trading_calendar(start_date="20070101"):
     """
     获取真实的交易日历作为绝对的对齐基准 (Master Calendar)
     """
@@ -30,7 +30,7 @@ def get_trading_calendar(start_date="20050101"):
     calendar_obj = calendar_obj[['Date']].sort_values('Date').reset_index(drop=True)
     return calendar_obj
 
-def fetch_stock_history_dual(code, start_date="20050101", end_date=None):
+def fetch_stock_history_dual(code, start_date="20070101", end_date=None):
     """
     针对单只股票，分别获取【不复权(Raw)】和【前复权(Qfq)】的数据，并进行横向拼接拼接入库。
     """
@@ -167,7 +167,7 @@ def align_with_master_calendar(df, master_calendar_df):
     
     return aligned_df
 
-def build_single_stock_vault(code, master_calendar_df, start_date="20050101"):
+def build_single_stock_vault(code, master_calendar_df, start_date="20070101"):
     """
     构建存入 Vault 的单票 Parquet 数据文件
     """
@@ -198,7 +198,7 @@ if __name__ == "__main__":
     print("=== A股量化回测系统 - 数据冷库(Vault)构建脚本 ===")
     
     # 获取上帝日历
-    master_cal = get_trading_calendar(start_date="20050101")
+    master_cal = get_trading_calendar(start_date="20070101")
     
     # 测试获取热门指数及大白马（我们可以先小规模测试）
     # 600519(茅台), 000001(平安银行), 300750(宁德时代), 688981(中芯国际), 002050(三花智控)
@@ -209,7 +209,7 @@ if __name__ == "__main__":
     ]
     
     for code in test_codes:
-        build_single_stock_vault(code, master_cal, start_date="20050101")
+        build_single_stock_vault(code, master_cal, start_date="20070101")
         time.sleep(1) # 防止请求过快被 AkShare API 封禁
         
     print("\n测试股票数据已经抓取完毕并构建好了 Super_Parquet 结构！")
